@@ -62,12 +62,26 @@ def inspect_archive(ipa):
         return info, binaries
 
 
+def validate_ios_slice(architecture, output):
+    commands = re.findall(r"^\s*cmd\s+(LC_BUILD_VERSION|LC_VERSION_MIN_\w+)\s*$", output, re.MULTILINE)
+    platforms = re.findall(r"^\s*platform\s+(\S+)\s*$", output, re.MULTILINE | re.IGNORECASE)
+    modern_ios = commands == ["LC_BUILD_VERSION"] and len(platforms) == 1 and platforms[0].upper() in {"IOS", "2"}
+    legacy_ios = commands == ["LC_VERSION_MIN_IPHONEOS"] and not platforms
+    if architecture not in {"arm64", "arm64e", "armv7", "armv7s"} or not (modern_ios or legacy_ios):
+        summary = {"architecture": architecture, "commands": commands, "platforms": platforms}
+        raise ValueError("Mach-O slice is not iOS device: " + json.dumps(summary, sort_keys=True))
+
+
 def verify_platform(binary_path):
-    result = subprocess.run(["xcrun", "vtool", "-show-build", str(binary_path)],
-                            check=True, capture_output=True, text=True)
-    platforms = re.findall(r"^\s*platform\s+(\S+)\s*$", result.stdout, re.MULTILINE | re.IGNORECASE)
-    if not platforms or any(value.upper() not in {"IOS", "2"} for value in platforms):
-        raise ValueError("Mach-O platform is not iOS device")
+    architectures = subprocess.run(["xcrun", "lipo", "-archs", str(binary_path)],
+                                   check=True, capture_output=True, text=True).stdout.split()
+    if not architectures:
+        raise ValueError("Mach-O has no readable architecture")
+    for architecture in architectures:
+        # Inspect each slice; a valid iOS slice cannot hide another platform in a fat file.
+        result = subprocess.run(["xcrun", "vtool", "-arch", architecture, "-show-build", str(binary_path)],
+                                check=True, capture_output=True, text=True)
+        validate_ios_slice(architecture, result.stdout)
     signed = subprocess.run(["codesign", "--display", "--verbose=4", str(binary_path)],
                             capture_output=True, text=True)
     details = signed.stderr + getattr(signed, "stdout", "")
@@ -104,10 +118,14 @@ def main():
     info, binaries = inspect_archive(args.ipa)
     signature_kinds = set()
     with tempfile.TemporaryDirectory(prefix="jobox-ipa-check-") as directory:
-        for index, executable in enumerate(binaries.values()):
+        for index, (archive_name, executable) in enumerate(binaries.items()):
             binary_path = Path(directory) / f"executable-{index}"
             binary_path.write_bytes(executable)
-            signature_kinds.add(verify_platform(binary_path))
+            try:
+                signature_kinds.add(verify_platform(binary_path))
+            except (ValueError, subprocess.CalledProcessError) as error:
+                tool_detail = (getattr(error, "stderr", "") or "")[:1600]
+                raise ValueError("Artifact rejected at " + json.dumps(archive_name) + ": " + str(error) + " " + tool_detail) from error
     digest = hashlib.sha256(args.ipa.read_bytes()).hexdigest()
     manifest = {
         "upstream": "Swiftgram/Telegram-iOS", "source_sha": SOURCE_SHA,
@@ -115,6 +133,7 @@ def main():
         "source_adjustments": [receipt["unsigned_profile_fix"]],
         "bundle_id": info["CFBundleIdentifier"], "platform": "iPhoneOS",
         "architecture": "arm64", "apple_identity_signed": False,
+        "platform_validation": "each Mach-O slice: modern iOS or legacy ARM iPhoneOS",
         "signature_kinds": sorted(signature_kinds), "checked_executables": len(binaries),
         "api_mode": "invalid-placeholder",
         "login_verified": False, "translation_verified": False,
