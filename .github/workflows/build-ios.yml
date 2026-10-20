@@ -94,6 +94,7 @@ jobs:
           python3 harness/scripts/verify_ipa.py \
             --ipa "$GITHUB_WORKSPACE/out/Swiftgram-buildcheck-unsigned.ipa" \
             --source-sha "$SOURCE_SHA" \
+            --build-receipt "$GITHUB_WORKSPACE/out/Swiftgram-buildcheck-unsigned.build.json" \
             --manifest "$GITHUB_WORKSPACE/out/build-manifest.json"
           echo 'Device IPA verified. Unsigned, placeholder API: cannot log in or install directly.' >> "$GITHUB_STEP_SUMMARY"
 
@@ -108,6 +109,7 @@ jobs:
           Telegram API configuration is invalid placeholder data; login and translation are not enabled.
           iPhone installation needs separate personal signing and real application configuration.
           Upstream: https://github.com/Swiftgram/Telegram-iOS/tree/cf8b23beaaac4126a396337ac2d5be13f9f76b66
+          Two rules_apple profile-embedding guards are adjusted for unsigned builds; exact hashes are in build-manifest.json.
           Build source and configuration are in this repository. See upstream licenses before redistribution.
           NOTES
           gh release create "buildcheck-$GITHUB_RUN_NUMBER" \

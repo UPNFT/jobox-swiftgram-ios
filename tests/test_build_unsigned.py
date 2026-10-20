@@ -3,9 +3,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import sys
 from unittest.mock import Mock, patch
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 SPEC = importlib.util.spec_from_file_location(
     "build_unsigned", Path(__file__).resolve().parents[1] / "scripts/build_unsigned.py"
 )
@@ -56,6 +58,9 @@ class UnsignedBuildTests(unittest.TestCase):
         ])
         revision.start()
         self.addCleanup(revision.stop)
+        profile_fix = patch.object(build, "apply_unsigned_profile_fix", return_value={"reviewed": True})
+        self.profile_fix = profile_fix.start()
+        self.addCleanup(profile_fix.stop)
 
     def write_configuration(self):
         self.config.write_text(json.dumps(self.configuration), encoding="utf-8")
@@ -74,6 +79,10 @@ class UnsignedBuildTests(unittest.TestCase):
         self.assertEqual(result, self.output)
         self.assertEqual(self.output.read_bytes(), b"mock-unsigned-ipa")
         self.assertEqual(Path.cwd(), previous_directory)
+        self.profile_fix.assert_called_once_with(self.upstream)
+        receipt = json.loads(self.output.with_suffix(".build.json").read_text(encoding="utf-8"))
+        self.assertEqual(receipt["source_sha"], build.UPSTREAM_SHA)
+        self.assertEqual(receipt["unsigned_profile_fix"], {"reviewed": True})
         self.make.BazelCommandLine.assert_called_once_with(
             bazel=str(self.bazel), override_bazel_version=False,
             override_xcode_version=False, bazel_user_root=None,
@@ -97,6 +106,7 @@ class UnsignedBuildTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "api_id=0"):
             self.run_build()
         build.importlib.import_module.assert_not_called()
+        self.profile_fix.assert_not_called()
         self.command.invoke_build.assert_not_called()
 
     def test_rejects_live_swiftgram_endpoint(self):
@@ -141,6 +151,14 @@ class UnsignedBuildTests(unittest.TestCase):
         self.command.invoke_build.side_effect = None
         with self.assertRaisesRegex(FileNotFoundError, "device IPA"):
             self.run_build()
+        self.assertFalse(self.output.exists())
+
+    def test_profile_source_drift_stops_before_build(self):
+        self.profile_fix.side_effect = ValueError("unexpected profile rule hash")
+        with self.assertRaisesRegex(ValueError, "rule hash"):
+            self.run_build()
+        build.importlib.import_module.assert_not_called()
+        self.command.invoke_build.assert_not_called()
         self.assertFalse(self.output.exists())
 
 

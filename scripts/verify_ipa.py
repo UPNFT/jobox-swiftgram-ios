@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import zipfile
 
+from patch_unsigned_profiles import profile_fix_receipt
+
 SOURCE_SHA = "cf8b23beaaac4126a396337ac2d5be13f9f76b66"
 BUNDLE_ID = "org.jobox.swiftgram.buildcheck"
 MAX_IPA_BYTES = 450 * 1024 * 1024
@@ -80,14 +82,25 @@ def verify_platform(binary_path):
     return "adhoc"
 
 
+def read_build_receipt(path):
+    receipt = json.loads(path.read_text(encoding="utf-8"))
+    if (receipt.get("source_sha") != SOURCE_SHA
+            or receipt.get("unsigned_profile_fix") != profile_fix_receipt()
+            or not re.fullmatch(r"[a-f0-9]{40}", receipt.get("harness_commit") or "")):
+        raise ValueError("Missing or unreviewed source adjustment provenance")
+    return receipt
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ipa", required=True, type=Path)
     parser.add_argument("--source-sha", required=True)
+    parser.add_argument("--build-receipt", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
     args = parser.parse_args()
     if args.source_sha != SOURCE_SHA:
         raise ValueError("Unexpected source revision")
+    receipt = read_build_receipt(args.build_receipt)
     info, binaries = inspect_archive(args.ipa)
     signature_kinds = set()
     with tempfile.TemporaryDirectory(prefix="jobox-ipa-check-") as directory:
@@ -98,6 +111,8 @@ def main():
     digest = hashlib.sha256(args.ipa.read_bytes()).hexdigest()
     manifest = {
         "upstream": "Swiftgram/Telegram-iOS", "source_sha": SOURCE_SHA,
+        "harness_commit": receipt["harness_commit"],
+        "source_adjustments": [receipt["unsigned_profile_fix"]],
         "bundle_id": info["CFBundleIdentifier"], "platform": "iPhoneOS",
         "architecture": "arm64", "apple_identity_signed": False,
         "signature_kinds": sorted(signature_kinds), "checked_executables": len(binaries),

@@ -12,6 +12,8 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+from patch_unsigned_profiles import apply_unsigned_profile_fix
+
 
 UPSTREAM_SHA = "cf8b23beaaac4126a396337ac2d5be13f9f76b66"
 RULES_APPLE_SHA = "1791d916de4083388f22e20248d8b010d23f0d6b"
@@ -50,7 +52,8 @@ def build_unsigned(upstream, config, bazel, build_number, output):
         raise RuntimeError("This verified Bazel binary requires a macOS Intel runner")
     if build_number < 1:
         raise ValueError("Build number must be positive")
-    if output.exists():
+    receipt_path = output.with_suffix(".build.json")
+    if output.exists() or receipt_path.exists():
         raise FileExistsError("Refusing to replace an existing output")
     if git_revision(upstream, "HEAD") != UPSTREAM_SHA:
         raise ValueError("Unexpected Swiftgram source revision")
@@ -62,6 +65,8 @@ def build_unsigned(upstream, config, bazel, build_number, output):
     if 'if "disable_legacy_signing" in features:' not in signing_source.read_text(encoding="utf-8"):
         raise ValueError("Pinned rules_apple has no explicit unsigned build feature")
     validate_configuration(config)
+    profile_fix = apply_unsigned_profile_fix(upstream)
+    print("Unsigned profile gate: " + json.dumps(profile_fix, sort_keys=True))
 
     previous_directory = Path.cwd()
     make_path = str(upstream / "build-system/Make")
@@ -100,6 +105,10 @@ def build_unsigned(upstream, config, bazel, build_number, output):
         output.parent.mkdir(parents=True, exist_ok=True)
         with ipa.open("rb") as source, output.open("xb") as destination:
             shutil.copyfileobj(source, destination)
+        with receipt_path.open("x", encoding="utf-8") as receipt:
+            json.dump({"source_sha": UPSTREAM_SHA, "unsigned_profile_fix": profile_fix,
+                       "harness_commit": os.environ.get("GITHUB_SHA")}, receipt, indent=2)
+            receipt.write("\n")
     finally:
         os.chdir(previous_directory)
         sys.path.remove(make_path)

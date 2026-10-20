@@ -13,6 +13,8 @@
 
 “未签名”指没有 Apple 开发者身份签名；允许链接器自动生成的纯 ad-hoc 签名，清单会区分 `none`/`adhoc`。两者都不能替代真机安装所需的个人签名。不会读取或导入上游假签名证书、私钥。
 
+固定 rules_apple 的主 App、普通小组件两处 profile 打包条件会复用其公开签名判断，使无签名构建不再强制嵌入签名文件。正常签名的原有检查保留；修改前后源码哈希严格锁定，构建清单记录该调整及本仓库提交，源码漂移即停止。
+
 ## 运行
 
 进入 Actions → Swiftgram unsigned iPhone build check → Run workflow。只有在人已经明确批准这一次大流量后，才能勾选 `large_transfer_approved`。创建仓库或推送源码均不会启动构建。

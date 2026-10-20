@@ -1,13 +1,16 @@
 import importlib.util
+import json
 from pathlib import Path
 import plistlib
 import struct
 import tempfile
 import unittest
+import sys
 from unittest.mock import patch
 import zipfile
 from types import SimpleNamespace
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 SPEC = importlib.util.spec_from_file_location("verify_ipa", Path(__file__).parents[1] / "scripts" / "verify_ipa.py")
 verify = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(verify)
@@ -32,6 +35,17 @@ class ArtifactTests(unittest.TestCase):
         self.create()
         info, _ = verify.inspect_archive(self.ipa)
         self.assertEqual(info["CFBundleIdentifier"], verify.BUNDLE_ID)
+
+    def test_build_provenance_requires_reviewed_rules_and_harness_commit(self):
+        path = Path(self.directory.name) / "receipt.json"
+        receipt = {"source_sha": verify.SOURCE_SHA,
+                   "unsigned_profile_fix": verify.profile_fix_receipt(), "harness_commit": "1" * 40}
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        self.assertEqual(verify.read_build_receipt(path), receipt)
+        receipt["unsigned_profile_fix"]["after_sha256"] = "0" * 64
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            verify.read_build_receipt(path)
 
     def test_simulator_and_wrong_identity_are_rejected(self):
         for kwargs in [{"platform":"iPhoneSimulator"}, {"bundle_id":"ph.telegra.Telegraph"}]:
