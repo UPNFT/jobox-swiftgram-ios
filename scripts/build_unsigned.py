@@ -92,14 +92,18 @@ def build_unsigned(upstream, config, bazel, build_number, output):
             ),
             additional_codesigning_output_path=None,
         )
-        command.set_configuration("release_arm64")
+        # Make passes shell quotes via argv; strip them before configuration copies the two flags.
+        command.common_debug_args = [argument.replace('"', '') for argument in command.common_debug_args]
+        # A build check needs device code, not release WMO and dSYM generation.
+        command.set_configuration("debug_arm64")
         command.set_build_number(build_number)
         command.set_custom_target("//Telegram:Swiftgram")
         command.set_disable_provisioning_profiles()
         # Make.py parses --bazelArguments but never uses it in this pinned revision.
         # Omit only the App Store support copy; native rules retain runtime dylibs in Payload.
         command.common_build_args.extend([
-            "--features=disable_legacy_signing", "--define=apple.package_swift_support=no", "--jobs=2",
+            "--features=disable_legacy_signing", "--define=apple.package_swift_support=no",
+            "--define=apple.compress_ipa=yes", "--jobs=2",
         ])
         command.invoke_build()
         ipa = upstream / "bazel-bin/Telegram/Swiftgram.ipa"
@@ -109,7 +113,8 @@ def build_unsigned(upstream, config, bazel, build_number, output):
         with ipa.open("rb") as source, output.open("xb") as destination:
             shutil.copyfileobj(source, destination)
         with receipt_path.open("x", encoding="utf-8") as receipt:
-            json.dump({"source_sha": UPSTREAM_SHA, "unsigned_profile_fix": profile_fix,
+            json.dump({"source_sha": UPSTREAM_SHA, "configuration": "debug_arm64",
+                       "unsigned_profile_fix": profile_fix,
                        "harness_commit": os.environ.get("GITHUB_SHA")}, receipt, indent=2)
             receipt.write("\n")
     finally:

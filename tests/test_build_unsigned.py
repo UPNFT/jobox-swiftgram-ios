@@ -41,6 +41,12 @@ class UnsignedBuildTests(unittest.TestCase):
         self.output = self.root / "artifacts/Swiftgram-unsigned.ipa"
         self.command = Mock()
         self.command.common_build_args = []
+        self.command.common_debug_args = [
+            '--@build_bazel_rules_swift//swift:copt="-j"',
+            '--@build_bazel_rules_swift//swift:copt="2"',
+        ]
+        self.configuration_debug_args = []
+        self.command.set_configuration.side_effect = lambda _: self.configuration_debug_args.extend(self.command.common_debug_args)
         self.make = Mock()
         self.make.BazelCommandLine.return_value = self.command
         self.command.invoke_build.side_effect = self.create_ipa
@@ -82,18 +88,24 @@ class UnsignedBuildTests(unittest.TestCase):
         self.profile_fix.assert_called_once_with(self.upstream)
         receipt = json.loads(self.output.with_suffix(".build.json").read_text(encoding="utf-8"))
         self.assertEqual(receipt["source_sha"], build.UPSTREAM_SHA)
+        self.assertEqual(receipt["configuration"], "debug_arm64")
         self.assertEqual(receipt["unsigned_profile_fix"], {"reviewed": True})
         self.make.BazelCommandLine.assert_called_once_with(
             bazel=str(self.bazel), override_bazel_version=False,
             override_xcode_version=False, bazel_user_root=None,
         )
-        self.command.set_configuration.assert_called_once_with("release_arm64")
+        self.command.set_configuration.assert_called_once_with("debug_arm64")
+        self.assertEqual(self.configuration_debug_args, [
+            '--@build_bazel_rules_swift//swift:copt=-j',
+            '--@build_bazel_rules_swift//swift:copt=2',
+        ])
         self.command.set_custom_target.assert_called_once_with("//Telegram:Swiftgram")
         self.command.set_build_number.assert_called_once_with(42)
         self.command.set_disable_provisioning_profiles.assert_called_once_with()
         self.command.invoke_build.assert_called_once_with()
         self.assertEqual(self.command.common_build_args, [
-            "--features=disable_legacy_signing", "--define=apple.package_swift_support=no", "--jobs=2"
+            "--features=disable_legacy_signing", "--define=apple.package_swift_support=no",
+            "--define=apple.compress_ipa=yes", "--jobs=2"
         ])
         arguments = self.make.resolve_configuration.call_args.kwargs["arguments"]
         self.assertIsNone(arguments.gitCodesigningRepository)

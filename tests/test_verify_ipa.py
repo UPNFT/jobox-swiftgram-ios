@@ -63,10 +63,17 @@ class ArtifactTests(unittest.TestCase):
 
     def test_build_provenance_requires_reviewed_rules_and_harness_commit(self):
         path = Path(self.directory.name) / "receipt.json"
-        receipt = {"source_sha": verify.SOURCE_SHA,
+        receipt = {"source_sha": verify.SOURCE_SHA, "configuration": "debug_arm64",
                    "unsigned_profile_fix": verify.profile_fix_receipt(), "harness_commit": "1" * 40}
         path.write_text(json.dumps(receipt), encoding="utf-8")
         self.assertEqual(verify.read_build_receipt(path), receipt)
+        for configuration in (None, "release_arm64", "debug_sim_arm64"):
+            with self.subTest(configuration=configuration):
+                receipt["configuration"] = configuration
+                path.write_text(json.dumps(receipt), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "provenance"):
+                    verify.read_build_receipt(path)
+        receipt["configuration"] = "debug_arm64"
         receipt["unsigned_profile_fix"]["after_sha256"] = "0" * 64
         path.write_text(json.dumps(receipt), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "provenance"):

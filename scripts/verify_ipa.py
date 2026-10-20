@@ -101,6 +101,7 @@ def verify_platform(binary_path):
 def read_build_receipt(path):
     receipt = json.loads(path.read_text(encoding="utf-8"))
     if (receipt.get("source_sha") != SOURCE_SHA
+            or receipt.get("configuration") != "debug_arm64"
             or receipt.get("unsigned_profile_fix") != profile_fix_receipt()
             or not re.fullmatch(r"[a-f0-9]{40}", receipt.get("harness_commit") or "")):
         raise ValueError("Missing or unreviewed source adjustment provenance")
@@ -132,6 +133,7 @@ def main():
     manifest = {
         "upstream": "Swiftgram/Telegram-iOS", "source_sha": SOURCE_SHA,
         "harness_commit": receipt["harness_commit"],
+        "configuration": receipt["configuration"],
         "source_adjustments": [receipt["unsigned_profile_fix"]],
         "bundle_id": info["CFBundleIdentifier"], "platform": "iPhoneOS",
         "architecture": "arm64", "apple_identity_signed": False,
