@@ -34,6 +34,8 @@ def inspect_archive(ipa):
                 data = archive.read(name)
                 if b"PRIVATE KEY" in data:
                     raise ValueError("Private key must not be published")
+        if any(PurePosixPath(name).parts[:1] == ("SwiftSupport",) for name in names):
+            raise ValueError("Expected unsigned sideload layout without App Store SwiftSupport")
         plists = [name for name in names if re.fullmatch(r"Payload/[^/]+\.app/Info\.plist", name)]
         if len(plists) != 1:
             raise ValueError("Expected exactly one main iPhone app")
@@ -133,6 +135,7 @@ def main():
         "source_adjustments": [receipt["unsigned_profile_fix"]],
         "bundle_id": info["CFBundleIdentifier"], "platform": "iPhoneOS",
         "architecture": "arm64", "apple_identity_signed": False,
+        "distribution_layout": "unsigned-sideload-without-swift-support",
         "platform_validation": "each Mach-O slice: modern iOS or legacy ARM iPhoneOS",
         "signature_kinds": sorted(signature_kinds), "checked_executables": len(binaries),
         "api_mode": "invalid-placeholder",

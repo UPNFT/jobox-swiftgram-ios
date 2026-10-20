@@ -93,7 +93,7 @@ class UnsignedBuildTests(unittest.TestCase):
         self.command.set_disable_provisioning_profiles.assert_called_once_with()
         self.command.invoke_build.assert_called_once_with()
         self.assertEqual(self.command.common_build_args, [
-            "--features=disable_legacy_signing", "--jobs=2"
+            "--features=disable_legacy_signing", "--define=apple.package_swift_support=no", "--jobs=2"
         ])
         arguments = self.make.resolve_configuration.call_args.kwargs["arguments"]
         self.assertIsNone(arguments.gitCodesigningRepository)

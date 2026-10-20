@@ -97,7 +97,10 @@ def build_unsigned(upstream, config, bazel, build_number, output):
         command.set_custom_target("//Telegram:Swiftgram")
         command.set_disable_provisioning_profiles()
         # Make.py parses --bazelArguments but never uses it in this pinned revision.
-        command.common_build_args.extend(["--features=disable_legacy_signing", "--jobs=2"])
+        # Omit only the App Store support copy; native rules retain runtime dylibs in Payload.
+        command.common_build_args.extend([
+            "--features=disable_legacy_signing", "--define=apple.package_swift_support=no", "--jobs=2",
+        ])
         command.invoke_build()
         ipa = upstream / "bazel-bin/Telegram/Swiftgram.ipa"
         if not ipa.is_file():

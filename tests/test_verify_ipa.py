@@ -52,6 +52,15 @@ class ArtifactTests(unittest.TestCase):
         info, _ = verify.inspect_archive(self.ipa)
         self.assertEqual(info["CFBundleIdentifier"], verify.BUNDLE_ID)
 
+    def test_app_store_support_is_rejected_only_at_archive_root(self):
+        for name in ("SwiftSupport/", "SwiftSupport/iphoneos/libswift_Concurrency.dylib"):
+            with self.subTest(name=name):
+                self.create(extra={name: b"fixture"})
+                with self.assertRaisesRegex(ValueError, "App Store SwiftSupport"):
+                    verify.inspect_archive(self.ipa)
+        self.create(extra={"Payload/Swiftgram.app/Assets/SwiftSupport/readme.txt": b"keep"})
+        verify.inspect_archive(self.ipa)
+
     def test_build_provenance_requires_reviewed_rules_and_harness_commit(self):
         path = Path(self.directory.name) / "receipt.json"
         receipt = {"source_sha": verify.SOURCE_SHA,
