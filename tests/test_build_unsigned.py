@@ -17,7 +17,7 @@ class UnsignedBuildTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.upstream = self.root / "upstream"
         self.upstream.mkdir()
         signing = self.upstream / build.RULES_APPLE_PATH / "apple/internal/codesigning_support.bzl"
