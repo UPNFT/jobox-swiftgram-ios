@@ -1,0 +1,120 @@
+name: Swiftgram unsigned iPhone build check
+
+on:
+  workflow_dispatch:
+    inputs:
+      large_transfer_approved:
+        description: 'User explicitly approved this >1 GB cloud source/dependency transfer'
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swiftgram-buildcheck
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: ${{ inputs.large_transfer_approved == true }}
+    runs-on: macos-26-intel
+    timeout-minutes: 240
+    permissions:
+      contents: write # Store verified files in an owner-reviewable draft release, not metered Actions storage.
+    env:
+      SOURCE_SHA: cf8b23beaaac4126a396337ac2d5be13f9f76b66
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+      BAZEL_SHA256: ce73346274c379f77880db8bd8b9c8569885fe56f19386173760949da9078df0
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+    steps:
+      - name: Check out build harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: harness
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check free standard runner and installed toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test "$(sw_vers -productVersion | cut -d. -f1)" = 26
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          df -h "$RUNNER_TEMP"
+          echo 'Unsigned build check only. No real accounts, API credentials or translation services.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out pinned Swiftgram source and public submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Swiftgram/Telegram-iOS
+          ref: cf8b23beaaac4126a396337ac2d5be13f9f76b66
+          path: swiftgram
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Use cached Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+
+      - name: Validate harness behavior
+        working-directory: harness
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Fetch pinned Intel Bazel and verify checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 --connect-timeout 30 --max-time 600 \
+            https://github.com/bazelbuild/bazel/releases/download/8.4.2/bazel-8.4.2-darwin-x86_64 \
+            --output "$RUNNER_TEMP/bazel-8.4.2"
+          printf '%s  %s\n' "$BAZEL_SHA256" "$RUNNER_TEMP/bazel-8.4.2" | shasum -a 256 --check
+          chmod +x "$RUNNER_TEMP/bazel-8.4.2"
+
+      - name: Build unsigned arm64 iPhone app with placeholder configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 harness/scripts/build_unsigned.py \
+            --upstream "$GITHUB_WORKSPACE/swiftgram" \
+            --config "$GITHUB_WORKSPACE/harness/config.json" \
+            --bazel "$RUNNER_TEMP/bazel-8.4.2" \
+            --build-number "$GITHUB_RUN_NUMBER" \
+            --output "$GITHUB_WORKSPACE/out/Swiftgram-buildcheck-unsigned.ipa"
+
+      - name: Verify device platform and unsigned artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 harness/scripts/verify_ipa.py \
+            --ipa "$GITHUB_WORKSPACE/out/Swiftgram-buildcheck-unsigned.ipa" \
+            --source-sha "$SOURCE_SHA" \
+            --manifest "$GITHUB_WORKSPACE/out/build-manifest.json"
+          echo 'Device IPA verified. Unsigned, placeholder API: cannot log in or install directly.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save verified files as a draft for owner review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/build-notes.md" <<'NOTES'
+          Build verification only. Not signed with an Apple developer identity.
+          Telegram API configuration is invalid placeholder data; login and translation are not enabled.
+          iPhone installation needs separate personal signing and real application configuration.
+          Upstream: https://github.com/Swiftgram/Telegram-iOS/tree/cf8b23beaaac4126a396337ac2d5be13f9f76b66
+          Build source and configuration are in this repository. See upstream licenses before redistribution.
+          NOTES
+          gh release create "buildcheck-$GITHUB_RUN_NUMBER" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease \
+            --title "Swiftgram build check $GITHUB_RUN_NUMBER · unsigned / placeholder API" \
+            --notes-file "$RUNNER_TEMP/build-notes.md" \
+            out/Swiftgram-buildcheck-unsigned.ipa \
+            out/Swiftgram-buildcheck-unsigned.ipa.sha256 \
+            out/build-manifest.json
+          echo 'Verified files are saved in a draft release for owner review; not publicly released.' >> "$GITHUB_STEP_SUMMARY"

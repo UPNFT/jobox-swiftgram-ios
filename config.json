@@ -1,0 +1,15 @@
+{
+  "sg_config": "{\"api_url\":\"https://jobox-build.invalid\",\"webapp_url\":\"https://jobox-build.invalid\",\"bot_username\":\"\",\"public_key\":null,\"iaps\":[]}",
+  "bundle_id": "org.jobox.swiftgram.buildcheck",
+  "api_id": 0,
+  "api_hash": "00000000000000000000000000000000",
+  "team_id": "0000000000",
+  "app_center_id": "",
+  "is_internal_build": "false",
+  "is_appstore_build": "false",
+  "appstore_id": 0,
+  "app_specific_url_scheme": "jobox-buildcheck",
+  "premium_iap_product_id": "",
+  "enable_siri": false,
+  "enable_icloud": false
+}
