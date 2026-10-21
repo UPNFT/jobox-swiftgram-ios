@@ -6,7 +6,7 @@
 
 [基础构建 run 39517096696](https://github.com/UPNFT/jobox-swiftgram-ios/actions/runs/39517096696) 已成功，156.06 MiB IPA、校验值和清单已保存在所有者可见的 Draft Release；13 个 Mach-O 二进制逐架构通过验包。它仍使用无效 Telegram API 配置，未签名，也未接入 Jobox。
 
-prototype 与 personal 均加入 Jobox 收译与草稿翻译，并精简免费个人签名不支持的功能。prototype 只使用[固定 Telegram 官方文档](https://github.com/telegramdesktop/tdesktop/blob/65b2db216033aa08b7bc846df27843e566f08981/docs/api_credentials.md)中的 TEST ONLY 应用配置，便于在自有应用登记受阻时进行短期原型测试；它不是自己的应用登记，不能用于长期客服，不保证适用于 iOS 登录。源码实现、本地合成测试、完整 Mac 编译、验包、个人签名、登录和真实收发翻译是不同验收阶段；基础包成功不能证明新功能可用。
+prototype 与 personal 均加入 Jobox 收译与草稿翻译，主 App 显示名及定制设置页标题为 Jobox，保留上游署名和原图标，并精简免费个人签名不支持的功能。prototype 只使用[固定 Telegram 官方文档](https://github.com/telegramdesktop/tdesktop/blob/65b2db216033aa08b7bc846df27843e566f08981/docs/api_credentials.md)中的 TEST ONLY 应用配置，便于在自有应用登记受阻时进行短期原型测试；它不是自己的应用登记，不能用于长期客服，不保证适用于 iOS 登录。源码实现、本地合成测试、完整 Mac 编译、验包、个人签名、登录和真实收发翻译是不同验收阶段；基础包成功不能证明新功能可用。
 
 第一版面向打开 App 时使用：聊天翻译为中文；已有会话的手动暂停继续保留，可通过原聊天翻译入口开启。中文草稿经过原翻译菜单处理后保留在输入框，由本人确认发送。不自动代发消息。prototype 与 personal 均不包含扩展、推送通知、Siri 或 iCloud；不承诺 App 退到后台后继续翻译或收到通知。
 
@@ -33,7 +33,7 @@ personal 构建前，所有者从 [Telegram 官方应用页面](https://my.teleg
 
 验包仍逐个检查所有 Mach-O 的每个架构、iOS 平台和签名，拒绝模拟器、其他平台、未知格式、Apple 身份签名与私钥文件。只允许链接器的纯 ad-hoc 签名或无签名，二者均不能直接安装。固定补丁必须匹配修改前后哈希，漂移即拒绝；完整清单保存调整及构建提交。
 
-仅将验包成功的 **IPA、IPA.sha256、build-manifest.json** 三个文件保存为 Draft。prototype 与 personal 均要求 Jobox/侧载补丁的精确回执、拒绝任何 .appex，保留 App Group 和 Keychain 所需能力。profile、API 模式与测试来源必须一致，不把 TEST ONLY 包写成自有 API 包。
+仅将验包成功的 **IPA、IPA.sha256、build-manifest.json** 三个文件保存为 Draft。prototype 与 personal 均要求 Jobox/侧载补丁的精确回执、主 IPA 显示名为 Jobox、拒绝任何 .appex，保留 App Group 和 Keychain 所需能力。profile、API 模式与测试来源必须一致，不把 TEST ONLY 包写成自有 API 包。
 
 ## Windows → iPhone 免费个人签名
 

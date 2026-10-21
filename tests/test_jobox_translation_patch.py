@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import gzip
 from pathlib import Path
 import shutil
 import sys
@@ -13,6 +14,7 @@ from unittest.mock import patch
 PACKAGE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE / "scripts"))
 import patch_jobox_translation as integration
+import patch_personal_sideload as sideload
 
 
 class JoboxTranslationPatchTests(unittest.TestCase):
@@ -173,6 +175,33 @@ class JoboxTranslationPatchTests(unittest.TestCase):
             self.assertIn('"Sources/**/*.swift"', build)
         self.assertIn('"//submodules/AsyncDisplayKit:AsyncDisplayKit"', self.read("Swiftgram/SGSettingsUI/BUILD"))
         self.assertIn('"//Swiftgram/SGSimpleSettings:SGSimpleSettings"', self.read("Swiftgram/SGGTranslate/BUILD"))
+
+    def test_settings_page_title_is_jobox_without_global_upstream_rename(self):
+        relative = "Swiftgram/SGSettingsUI/Sources/SGSettingsController.swift"
+        original = self.read(relative)
+        self.apply()
+        patched = self.read(relative)
+        self.assertIn('title: .text("Jobox"), leftNavigationButton:', patched)
+        self.assertNotIn('title: .text("Swiftgram"), leftNavigationButton:', patched)
+        self.assertEqual(original.count("Swiftgram") - patched.count("Swiftgram"), 1)
+        self.assertIn("// MARK: Swiftgram", patched)
+        self.assertIn("public func sgSettingsController(", patched)
+
+    def test_translation_then_sideload_compose_without_touching_the_shared_build_early(self):
+        original = gzip.decompress((PACKAGE / "tests/fixtures/Telegram.BUILD.gz").read_bytes())
+        self.assertEqual(hashlib.sha256(original).hexdigest(), sideload.BEFORE_SHA256)
+        build_path = self.root / sideload.RELATIVE_PATH
+        build_path.parent.mkdir(parents=True, exist_ok=True)
+        build_path.write_bytes(original)
+        self.apply()
+        self.assertEqual(build_path.read_bytes(), original)
+        receipt = sideload.apply_personal_sideload_fix(self.root)
+        self.assertEqual(receipt, sideload.personal_sideload_receipt())
+        self.assertEqual(hashlib.sha256(build_path.read_bytes()).hexdigest(), sideload.AFTER_SHA256)
+        self.assertIn(b'<key>CFBundleDisplayName</key>\n    <string>Jobox</string>', build_path.read_bytes())
+        with patch.object(Path, "write_bytes", side_effect=AssertionError("applied sequence must not write")):
+            self.apply()
+            sideload.apply_personal_sideload_fix(self.root)
 
 
 if __name__ == "__main__":

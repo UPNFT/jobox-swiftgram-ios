@@ -58,6 +58,7 @@ def _transform(path: str, source: str) -> str:
     if path.endswith("SGSimpleSettings/Sources/SimpleSettings.swift"):
         change("        case gtranslate\n        case system", "        case gtranslate\n        case jobox\n        case system")
     elif path.endswith("SGSettingsUI/Sources/SGSettingsController.swift"):
+        change('title: .text("Swiftgram"), leftNavigationButton:', 'title: .text("Jobox"), leftNavigationButton:')
         change("import SGSimpleSettings\n", "import SGSimpleSettings\nimport SGGTranslate\n")
         change("    case languageSettings\n}", "    case languageSettings\n    case joboxSettings\n}")
         change("private func SGControllerEntries(presentationData:", "private func SGControllerEntries(accountId: Int64, presentationData:")

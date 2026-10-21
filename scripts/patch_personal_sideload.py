@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare only the pinned Swiftgram BUILD for an explicit personal sideload build."""
+"""Prepare the pinned foreground Jobox app's display name and sideload capabilities."""
 
 import argparse
 import hashlib
@@ -10,7 +10,7 @@ from pathlib import Path
 SOURCE_SHA = "cf8b23beaaac4126a396337ac2d5be13f9f76b66"
 RELATIVE_PATH = "Telegram/BUILD"
 BEFORE_SHA256 = "3cc41d7c0bb7cf1afa1a572ac9637d3d0ad33d93210bf82b791a09e1c628b2fa"
-AFTER_SHA256 = "7be3b34243575f993ba7d5b539f54d5e1ab888d0d31f6f5dbda0e17efe5365a3"
+AFTER_SHA256 = "4062fcf2cbd032077e95d69307d8dd8ec5635d64b867762e14b7fe1d3aae004f"
 REQUIRED_BUILD_FLAGS = ("--//Telegram:disableExtensions=true",)
 REMOVED_CAPABILITIES = (
     "com.apple.developer.carplay-messaging",
@@ -31,6 +31,13 @@ carplay_fragment = official_carplay_fragment # MARK: Swiftgram if telegram_bundl
 communication_notifications_fragment = official_communication_notifications_fragment # if telegram_bundle_id in official_bundle_ids else ""
 
 ''', b'communication_notifications_fragment = ""\n\n'),
+    (b'''    <key>CFBundleDisplayName</key>
+    <string>Swiftgram</string>
+    <key>CFBundleIdentifier</key>
+    <string>{telegram_bundle_id}</string>''', b'''    <key>CFBundleDisplayName</key>
+    <string>Jobox</string>
+    <key>CFBundleIdentifier</key>
+    <string>{telegram_bundle_id}</string>'''),
 )
 
 
@@ -58,7 +65,7 @@ def patch_content(content):
     for before, after in REPLACEMENTS:
         content = content.replace(before, after, 1)
     if sha256(content) != AFTER_SHA256:
-        raise ValueError("Patched Telegram/BUILD does not match the reviewed capability removal")
+        raise ValueError("Patched Telegram/BUILD does not match the reviewed Jobox display name and capabilities")
     return content
 
 

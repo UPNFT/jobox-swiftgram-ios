@@ -48,6 +48,8 @@ def inspect_archive(ipa, personal=False):
             raise ValueError("Expected iPhone device build, not simulator")
         if info.get("CFBundleIdentifier") != BUNDLE_ID:
             raise ValueError("Unexpected build-check bundle identifier")
+        if personal and info.get("CFBundleDisplayName") != "Jobox":
+            raise ValueError("Integrated app must display the Jobox name")
         executable_name = info.get("CFBundleExecutable", "")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", executable_name):
             raise ValueError("Invalid main executable name")
@@ -160,6 +162,7 @@ def main():
         ),
         "build_profile": receipt.get("build_profile", "buildcheck"),
         "bundle_id": info["CFBundleIdentifier"], "platform": "iPhoneOS",
+        "app_display_name": info.get("CFBundleDisplayName"),
         "architecture": "arm64", "apple_identity_signed": False,
         "distribution_layout": "unsigned-sideload-without-swift-support",
         "platform_validation": "each Mach-O slice: modern iOS or legacy ARM iPhoneOS",

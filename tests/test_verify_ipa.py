@@ -39,19 +39,22 @@ class ArtifactTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.ipa = Path(self.directory.name) / "check.ipa"
 
-    def create(self, platform="iPhoneOS", extra=None, bundle_id=verify.BUNDLE_ID):
+    def create(self, platform="iPhoneOS", extra=None, bundle_id=verify.BUNDLE_ID, display_name="Jobox"):
+        info = {"CFBundleSupportedPlatforms": [platform],
+                "CFBundleIdentifier": bundle_id, "CFBundleExecutable": "Swiftgram"}
+        if display_name is not None:
+            info["CFBundleDisplayName"] = display_name
         with zipfile.ZipFile(self.ipa, "w") as archive:
-            archive.writestr("Payload/Swiftgram.app/Info.plist", plistlib.dumps({
-                "CFBundleSupportedPlatforms": [platform],
-                "CFBundleIdentifier": bundle_id, "CFBundleExecutable": "Swiftgram"}))
+            archive.writestr("Payload/Swiftgram.app/Info.plist", plistlib.dumps(info))
             archive.writestr("Payload/Swiftgram.app/Swiftgram", struct.pack("<II", 0xFEEDFACF, 0x0100000C) + b"\0" * 24)
             for name, content in (extra or {}).items():
                 archive.writestr(name, content)
 
     def test_device_archive_is_accepted(self):
-        self.create()
+        self.create(display_name="Swiftgram")
         info, _ = verify.inspect_archive(self.ipa)
         self.assertEqual(info["CFBundleIdentifier"], verify.BUNDLE_ID)
+        self.assertEqual(info["CFBundleDisplayName"], "Swiftgram")
 
     def test_app_store_support_is_rejected_only_at_archive_root(self):
         for name in ("SwiftSupport/", "SwiftSupport/iphoneos/libswift_Concurrency.dylib"):
@@ -225,6 +228,7 @@ class ArtifactTests(unittest.TestCase):
         manifest_text = manifest_path.read_text(encoding="utf-8")
         manifest = json.loads(manifest_text)
         self.assertEqual(manifest["build_profile"], profile)
+        self.assertEqual(manifest["app_display_name"], "Jobox")
         self.assertEqual(manifest["api_mode"], "official-test-only" if profile == "prototype" else "private-application")
         self.assertEqual(manifest["test_api_source"], verify.test_configuration_receipt() if profile == "prototype" else None)
         self.assertEqual(manifest["translation_integration"], "jobox-configurable")
@@ -235,6 +239,23 @@ class ArtifactTests(unittest.TestCase):
             self.assertIs(manifest[field], False)
         for field in ("api_hash", "token"):
             self.assertNotIn(field, manifest_text)
+
+    def test_integrated_main_rejects_unbranded_app_before_tools_or_success_files(self):
+        for profile in ("personal", "prototype"):
+            receipt_path = self.write_receipt(self.prepare_personal_receipt(profile))
+            for display_name in (None, "", "Swiftgram"):
+                with self.subTest(profile=profile, display_name=display_name):
+                    self.create(display_name=display_name)
+                    manifest = Path(self.directory.name) / "manifest.json"
+                    with patch.object(sys, "argv", [
+                        "verify_ipa.py", "--ipa", str(self.ipa), "--source-sha", verify.SOURCE_SHA,
+                        "--build-receipt", str(receipt_path), "--manifest", str(manifest),
+                    ]), patch.object(verify, "verify_platform") as check:
+                        with self.assertRaisesRegex(ValueError, "Jobox name"):
+                            verify.main()
+                    check.assert_not_called()
+                    self.assertFalse(manifest.exists())
+                    self.assertFalse(self.ipa.with_suffix(".ipa.sha256").exists())
 
     def test_integrated_main_rejects_extension_residue_before_tools_or_success_files(self):
         for profile in ("personal", "prototype"):

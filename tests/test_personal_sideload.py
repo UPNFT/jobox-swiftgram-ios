@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -56,14 +57,31 @@ class PersonalSideloadTests(unittest.TestCase):
         for unsupported in ("aps-environment", "com.apple.developer.siri", "associated-domains", "icloud"):
             self.assertNotIn(unsupported, after)
 
-    def test_exactly_two_reviewed_fragments_change_and_other_rules_stay_identical(self):
+    def test_exactly_three_reviewed_fragments_change_and_other_rules_stay_identical(self):
         patched = fix.patch_content(self.original)
+        self.assertEqual(len(fix.REPLACEMENTS), 3)
         restored = patched
         for before, after in fix.REPLACEMENTS:
             self.assertEqual(self.original.count(before), 1)
             self.assertEqual(patched.count(after), 1)
             restored = restored.replace(after, before, 1)
         self.assertEqual(restored, self.original)
+
+    def test_only_main_app_display_name_changes_and_internal_identity_is_preserved(self):
+        patched = fix.patch_content(self.original)
+        source = patched.decode("utf-8")
+        start = source.index('name = "TelegramInfoPlist",')
+        end = source.index('    """.format(', start)
+        main_plist = source[start:end]
+        values = dict(re.findall(r"<key>(CFBundleDisplayName|CFBundleName|CFBundleIdentifier)</key>\s*<string>([^<]+)</string>", main_plist))
+        self.assertEqual(values, {"CFBundleDisplayName": "Jobox", "CFBundleName": "Swiftgram",
+                                  "CFBundleIdentifier": "{telegram_bundle_id}"})
+        self.assertEqual(source.count('<string>Jobox</string>'), 1)
+        for retained in (b'ios_application(\n    name = "Swiftgram",',
+                         b'bundle_id = "{telegram_bundle_id}".format(',
+                         b'project_name = "Swiftgram",', b'name = "AppNameInfoPlist",'):
+            self.assertGreater(self.original.count(retained), 0)
+            self.assertEqual(patched.count(retained), self.original.count(retained))
 
     def test_extension_removal_uses_the_existing_opt_in_flag_without_rewriting_rules(self):
         self.assertEqual(fix.REQUIRED_BUILD_FLAGS, ("--//Telegram:disableExtensions=true",))
@@ -83,6 +101,11 @@ class PersonalSideloadTests(unittest.TestCase):
             with self.subTest(digest=hashlib.sha256(changed).hexdigest()):
                 with self.assertRaisesRegex(ValueError, "source drift"):
                     fix.patch_content(changed)
+        old_capabilities_only = self.original
+        for before, after in fix.REPLACEMENTS[:2]:
+            old_capabilities_only = old_capabilities_only.replace(before, after, 1)
+        with self.assertRaisesRegex(ValueError, "source drift"):
+            fix.patch_content(old_capabilities_only)
 
     def test_applier_is_explicit_records_receipt_and_does_not_rewrite_an_applied_file(self):
         with tempfile.TemporaryDirectory() as directory:
