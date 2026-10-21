@@ -75,6 +75,22 @@ private func json(_ value: [String: Any]) -> Data {
     return try! JSONSerialization.data(withJSONObject: value)
 }
 
+private func requestBody(_ request: URLRequest) throws -> Data {
+    if let body = request.httpBody { return body }
+    guard let stream = request.httpBodyStream else { throw TestFailure.failed("missing request body") }
+    stream.open()
+    defer { stream.close() }
+    var body = Data()
+    let capacity = 1024
+    var buffer = [UInt8](repeating: 0, count: capacity)
+    while true {
+        let count = stream.read(&buffer, maxLength: capacity)
+        guard count >= 0 else { throw stream.streamError ?? TestFailure.failed("request body stream failed") }
+        if count == 0 { return body }
+        body.append(contentsOf: buffer.prefix(count))
+    }
+}
+
 private func translate(_ client: JoboxTranslationClient = client(), texts: [String] = ["hello"], language: String = "zh", task: JoboxTranslationTask = .incoming) throws -> Result<[String], JoboxTranslationError> {
     let semaphore = DispatchSemaphore(value: 0)
     let lock = NSLock()
@@ -101,11 +117,18 @@ private func isFailure(_ result: Result<[String], JoboxTranslationError>, _ expe
 }
 
 private func testParagraphAndProtocol() throws {
+    let fixtureBody = Data("one paragraph\n第二行".utf8)
+    var fixtureRequest = URLRequest(url: URL(string: "https://translation.invalid/")!)
+    fixtureRequest.httpBody = fixtureBody
+    try check(try requestBody(fixtureRequest) == fixtureBody, "Data request body read intact")
+    fixtureRequest.httpBody = nil
+    fixtureRequest.httpBodyStream = InputStream(data: fixtureBody)
+    try check(try requestBody(fixtureRequest) == fixtureBody, "stream request body read intact")
     let lock = NSLock()
-    var captured: URLRequest?
+    var captured: (request: URLRequest, body: Data)?
     StubURLProtocol.reset { stub in
         lock.lock()
-        captured = stub.request
+        captured = (stub.request, try! requestBody(stub.request))
         lock.unlock()
         stub.respond(json(["ok": true, "translations": ["整段译文"]]))
     }
@@ -113,9 +136,10 @@ private func testParagraphAndProtocol() throws {
     let result = try translate(texts: [paragraph])
     try check(try result.get() == ["整段译文"], "incoming result")
     lock.lock()
-    let request = captured!
+    let request = captured!.request
+    let capturedBody = captured!.body
     lock.unlock()
-    let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
+    let body = try JSONSerialization.jsonObject(with: capturedBody) as! [String: Any]
     try check(StubURLProtocol.startCount == 1, "paragraph is one request")
     try check(request.httpMethod == "POST", "POST")
     try check(request.timeoutInterval == 30, "fixed timeout")
@@ -133,7 +157,7 @@ private func testOutbound() throws {
     var body: [String: Any] = [:]
     StubURLProtocol.reset { stub in
         lock.lock()
-        body = try! JSONSerialization.jsonObject(with: stub.request.httpBody!) as! [String: Any]
+        body = try! JSONSerialization.jsonObject(with: requestBody(stub.request)) as! [String: Any]
         lock.unlock()
         stub.respond(json(["ok": true, "translatedText": "draft only"]))
     }
@@ -157,7 +181,7 @@ private func testEnabledPreference() throws {
     var body: [String: Any] = [:]
     StubURLProtocol.reset { stub in
         lock.lock()
-        body = try! JSONSerialization.jsonObject(with: stub.request.httpBody!) as! [String: Any]
+        body = try! JSONSerialization.jsonObject(with: requestBody(stub.request)) as! [String: Any]
         lock.unlock()
         stub.respond(json(["ok": true, "translations": ["translation"]]))
     }
