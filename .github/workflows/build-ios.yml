@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       build_profile:
-        description: 'Choose synthetic tests, placeholder base, or private personal translation build'
+        description: 'Choose synthetic tests, placeholder base, test-only Jobox prototype, or private personal build'
         type: choice
         required: true
         default: buildcheck
         options:
           - translation-tests
           - buildcheck
+          - prototype
           - personal
       large_transfer_approved:
         description: 'User explicitly approved this >1 GB cloud source/dependency transfer'
@@ -46,8 +47,15 @@ jobs:
             tests/JoboxTranslationTransportTests.swift -o "$RUNNER_TEMP/jobox-translation-tests"
           "$RUNNER_TEMP/jobox-translation-tests"
 
+      - name: Smoke-test official public test configuration preparation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare_test_configuration.py \
+            --base config.json --output "$RUNNER_TEMP/jobox-test-config-smoke.json"
+
   build:
-    if: ${{ inputs.large_transfer_approved == true && (inputs.build_profile == 'buildcheck' || inputs.build_profile == 'personal') }}
+    if: ${{ inputs.large_transfer_approved == true && (inputs.build_profile == 'buildcheck' || inputs.build_profile == 'prototype' || inputs.build_profile == 'personal') }}
     runs-on: macos-26-intel
     timeout-minutes: 240
     permissions:
@@ -76,6 +84,14 @@ jobs:
           set -euo pipefail
           python3 harness/scripts/prepare_personal_configuration.py \
             --base harness/config.json --output "$RUNNER_TEMP/jobox-personal-config.json"
+
+      - name: Prepare pinned official test-only configuration before source transfer
+        if: ${{ inputs.build_profile == 'prototype' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 harness/scripts/prepare_test_configuration.py \
+            --base harness/config.json --output "$RUNNER_TEMP/jobox-prototype-config.json"
 
       - name: Check free standard runner and installed toolchain
         shell: bash
@@ -124,6 +140,8 @@ jobs:
           config="$GITHUB_WORKSPACE/harness/config.json"
           if [[ "$BUILD_PROFILE" == personal ]]; then
             config="$RUNNER_TEMP/jobox-personal-config.json"
+          elif [[ "$BUILD_PROFILE" == prototype ]]; then
+            config="$RUNNER_TEMP/jobox-prototype-config.json"
           fi
           python3 harness/scripts/build_unsigned.py \
             --upstream "$GITHUB_WORKSPACE/swiftgram" \
@@ -152,11 +170,14 @@ jobs:
           cat > "$RUNNER_TEMP/build-notes.md" <<'NOTES'
           Unsigned device build, not signed with an Apple developer identity.
           Check build-manifest.json for build_profile, api_mode and exact source adjustments.
+          Prototype builds include Jobox with the official TEST ONLY application configuration.
+          That configuration is restricted to short-term testing; iOS login has not been verified.
+          It is not the owner's application registration and must not be used for ongoing customer service.
           Personal builds contain the owner's Telegram application configuration. Keep this draft private.
           Never publish the personal IPA or copy it into public Actions artifacts.
           Jobox service configuration and token are entered on device, with the token in Keychain.
           iPhone signing, App Group mapping, login and live translation have not been verified.
-          Free personal signing expires after 7 days. This foreground build has no push notifications or extensions.
+          Free personal signing expires after 7 days. Prototype and personal foreground profiles omit push notifications and extensions.
           Upstream: https://github.com/Swiftgram/Telegram-iOS/tree/cf8b23beaaac4126a396337ac2d5be13f9f76b66
           Two rules_apple profile-embedding guards are adjusted for unsigned builds; exact hashes are in build-manifest.json.
           Public source and placeholder configuration are in this repository; private configuration is runner-local only.

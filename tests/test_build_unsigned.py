@@ -98,6 +98,10 @@ class UnsignedBuildTests(unittest.TestCase):
         receipt = json.loads(self.output.with_suffix(".build.json").read_text(encoding="utf-8"))
         self.assertEqual(receipt["source_sha"], build.UPSTREAM_SHA)
         self.assertEqual(receipt["configuration"], "debug_arm64")
+        self.assertEqual(receipt["build_profile"], "buildcheck")
+        self.assertEqual(receipt["api_mode"], "invalid-placeholder")
+        self.assertIsNone(receipt["test_api_source"])
+        self.assertIsNone(receipt["translation_patch"])
         self.assertEqual(receipt["unsigned_profile_fix"], {"reviewed": True})
         self.make.BazelCommandLine.assert_called_once_with(
             bazel=str(self.bazel), override_bazel_version=False,
@@ -135,6 +139,13 @@ class UnsignedBuildTests(unittest.TestCase):
     def run_personal_build(self):
         return build.build_unsigned(self.upstream, self.config, self.bazel, 42, self.output, profile="personal")
 
+    def configure_prototype_build(self):
+        self.configure_personal_build()
+        # This is a synthetic classifier fixture, never an API request or usable credential.
+        classifier = patch.object(build, "is_test_configuration", return_value=True)
+        classifier.start()
+        self.addCleanup(classifier.stop)
+
     def test_personal_configuration_cannot_enter_the_default_buildcheck(self):
         self.configure_personal_build()
         with self.assertRaisesRegex(ValueError, "api_id=0"):
@@ -146,7 +157,16 @@ class UnsignedBuildTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_personal_build_applies_both_patches_before_make_and_preserves_unsigned_gate(self):
-        self.configure_personal_build()
+        self.assert_integrated_build("personal")
+
+    def test_prototype_applies_both_patches_and_records_only_official_test_provenance(self):
+        self.assert_integrated_build("prototype")
+
+    def assert_integrated_build(self, profile):
+        if profile == "prototype":
+            self.configure_prototype_build()
+        else:
+            self.configure_personal_build()
 
         def verify_adjustments_before_configure(**arguments):
             self.translation.apply_jobox_translation.assert_called_once_with(self.upstream)
@@ -159,7 +179,8 @@ class UnsignedBuildTests(unittest.TestCase):
         captured = io.StringIO()
         with redirect_stdout(captured), patch.dict(build.os.environ, {"GITHUB_SHA": "3" * 40,
                                                                      "JOBOX_TEST_TOKEN": "synthetic-private-token"}):
-            self.assertEqual(self.run_personal_build(), self.output)
+            self.assertEqual(build.build_unsigned(self.upstream, self.config, self.bazel, 42, self.output,
+                                                 profile=profile), self.output)
         self.assertEqual([item.args[0] for item in self.importer.call_args_list], ["patch_jobox_translation", "Make"])
         self.command.set_configuration.assert_called_once_with("debug_arm64")
         self.command.set_custom_target.assert_called_once_with("//Telegram:Swiftgram")
@@ -170,8 +191,9 @@ class UnsignedBuildTests(unittest.TestCase):
         ])
         receipt_text = self.output.with_suffix(".build.json").read_text(encoding="utf-8")
         receipt = json.loads(receipt_text)
-        self.assertEqual(receipt["build_profile"], "personal")
-        self.assertEqual(receipt["api_mode"], "private-application")
+        self.assertEqual(receipt["build_profile"], profile)
+        self.assertEqual(receipt["api_mode"], "official-test-only" if profile == "prototype" else "private-application")
+        self.assertEqual(receipt["test_api_source"], build.test_configuration_receipt() if profile == "prototype" else None)
         self.assertEqual(receipt["personal_sideload_fix"], personal_sideload_receipt())
         self.assertEqual(receipt["translation_patch"], self.translation_receipt)
         self.assertEqual(receipt["unsigned_profile_fix"], {"reviewed": True})
@@ -180,6 +202,81 @@ class UnsignedBuildTests(unittest.TestCase):
         for secret in (self.configuration["api_hash"], "synthetic-private-token", "api_hash", "JOBOX_TEST_TOKEN"):
             self.assertNotIn(secret, receipt_text + captured.getvalue())
 
+    def test_profiles_require_mutually_exclusive_configuration_classes(self):
+        # Classify synthetic dictionaries without reading the published pair or private values.
+        configurations = {
+            "placeholder": {"api_id": 0, "api_hash": "0" * 32},
+            "private": {"api_id": 123456, "api_hash": "a" * 32},
+            "official-test-fixture": {"api_id": 654321, "api_hash": "b" * 32},
+        }
+        accepted = {"buildcheck": "placeholder", "prototype": "official-test-fixture", "personal": "private"}
+        for profile, permitted in accepted.items():
+            for kind, api in configurations.items():
+                with self.subTest(profile=profile, configuration=kind), patch.object(
+                    build, "is_test_configuration", side_effect=lambda candidate: candidate.get("api_id") == 654321
+                ):
+                    self.configuration.update(api)
+                    self.write_configuration()
+                    if kind == permitted:
+                        build.validate_configuration(self.config, profile)
+                    else:
+                        with self.assertRaises(ValueError):
+                            build.validate_configuration(self.config, profile)
+        self.importer.assert_not_called()
+        self.command.invoke_build.assert_not_called()
+
+    def test_placeholder_id_must_be_an_integer_zero(self):
+        for api_id in (False, 0.0, "0", None):
+            with self.subTest(api_id_type=type(api_id).__name__):
+                self.configuration["api_id"] = api_id
+                self.write_configuration()
+                with self.assertRaisesRegex(ValueError, "api_id=0"):
+                    build.validate_configuration(self.config, "buildcheck")
+
+    def test_prototype_rejects_unverified_config_before_any_patch_or_make(self):
+        with self.assertRaisesRegex(ValueError, "official test-only configuration"):
+            build.build_unsigned(self.upstream, self.config, self.bazel, 42, self.output, profile="prototype")
+        self.importer.assert_not_called()
+        self.personal_fix.assert_not_called()
+        self.profile_fix.assert_not_called()
+        self.command.invoke_build.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_personal_does_not_relabel_the_official_test_fixture_as_private(self):
+        self.configure_prototype_build()
+        with self.assertRaisesRegex(ValueError, "private Telegram application configuration"):
+            self.run_personal_build()
+        self.importer.assert_not_called()
+        self.personal_fix.assert_not_called()
+        self.profile_fix.assert_not_called()
+        self.command.invoke_build.assert_not_called()
+
+    def test_prototype_patch_drift_stops_before_make_or_output(self):
+        self.configure_prototype_build()
+        self.translation.apply_jobox_translation.side_effect = ValueError("translation source drift")
+        with self.assertRaisesRegex(ValueError, "source drift"):
+            build.build_unsigned(self.upstream, self.config, self.bazel, 42, self.output, profile="prototype")
+        self.personal_fix.assert_not_called()
+        self.profile_fix.assert_not_called()
+        self.command.invoke_build.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_workflow_uses_one_approved_build_and_only_prototype_prepares_test_configuration(self):
+        workflow = (Path(__file__).parents[1] / ".github/workflows/build-ios.yml").read_text(encoding="utf-8")
+        self.assertIn("          - prototype\n", workflow)
+        self.assertIn("inputs.large_transfer_approved == true", workflow)
+        self.assertIn("inputs.build_profile == 'prototype' || inputs.build_profile == 'personal'", workflow)
+        self.assertEqual(workflow.count("python3 harness/scripts/build_unsigned.py"), 1)
+        self.assertEqual(workflow.count("gh release create"), 1)
+        preparation = workflow.split("      - name: Prepare pinned official test-only configuration before source transfer\n")[1].split("      - name:", 1)[0]
+        self.assertIn("if: ${{ inputs.build_profile == 'prototype' }}", preparation)
+        self.assertIn("prepare_test_configuration.py", preparation)
+        self.assertIn('"$RUNNER_TEMP/jobox-prototype-config.json"', preparation)
+        self.assertNotIn("secrets.", preparation)
+        self.assertLess(workflow.index("prepare_test_configuration.py"), workflow.index("repository: Swiftgram/Telegram-iOS"))
+        self.assertIn("elif [[ \"$BUILD_PROFILE\" == prototype ]]; then", workflow)
+        self.assertIn("--draft --prerelease", workflow)
+        self.assertIn("TEST ONLY", workflow)
     def test_personal_requires_nonzero_integer_api_and_nonplaceholder_hash(self):
         self.configure_personal_build()
         for api_id, api_hash in (

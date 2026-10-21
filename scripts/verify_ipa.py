@@ -12,6 +12,7 @@ import zipfile
 
 from patch_unsigned_profiles import profile_fix_receipt
 from patch_personal_sideload import personal_sideload_receipt
+from prepare_test_configuration import test_configuration_receipt
 
 SOURCE_SHA = "cf8b23beaaac4126a396337ac2d5be13f9f76b66"
 BUNDLE_ID = "org.jobox.swiftgram.buildcheck"
@@ -109,14 +110,18 @@ def read_build_receipt(path):
             or not re.fullmatch(r"[a-f0-9]{40}", receipt.get("harness_commit") or "")):
         raise ValueError("Missing or unreviewed source adjustment provenance")
     profile = receipt.get("build_profile", "buildcheck")
-    if profile == "personal":
+    if profile in {"prototype", "personal"}:
         from patch_jobox_translation import translation_patch_receipt
-        if (receipt.get("api_mode") != "private-application"
+        expected_mode = "official-test-only" if profile == "prototype" else "private-application"
+        expected_source = test_configuration_receipt() if profile == "prototype" else None
+        if (receipt.get("api_mode") != expected_mode
+                or receipt.get("test_api_source") != expected_source
                 or receipt.get("personal_sideload_fix") != personal_sideload_receipt()
                 or receipt.get("translation_patch") != translation_patch_receipt()):
-            raise ValueError("Missing or unreviewed personal translation provenance")
+            raise ValueError(f"Missing or unreviewed {profile} translation provenance")
     elif (profile != "buildcheck"
           or receipt.get("api_mode", "invalid-placeholder") != "invalid-placeholder"
+          or receipt.get("test_api_source") is not None
           or receipt.get("personal_sideload_fix") is not None
           or receipt.get("translation_patch") is not None):
         raise ValueError("Unexpected build-check profile or source changes")
@@ -133,8 +138,8 @@ def main():
     if args.source_sha != SOURCE_SHA:
         raise ValueError("Unexpected source revision")
     receipt = read_build_receipt(args.build_receipt)
-    personal = receipt.get("build_profile") == "personal"
-    info, binaries = inspect_archive(args.ipa, personal=personal)
+    integrated = receipt.get("build_profile") in {"prototype", "personal"}
+    info, binaries = inspect_archive(args.ipa, personal=integrated)
     signature_kinds = set()
     with tempfile.TemporaryDirectory(prefix="jobox-ipa-check-") as directory:
         for index, (archive_name, executable) in enumerate(binaries.items()):
@@ -151,7 +156,7 @@ def main():
         "harness_commit": receipt["harness_commit"],
         "configuration": receipt["configuration"],
         "source_adjustments": [receipt["unsigned_profile_fix"]] + (
-            [receipt["personal_sideload_fix"], receipt["translation_patch"]] if personal else []
+            [receipt["personal_sideload_fix"], receipt["translation_patch"]] if integrated else []
         ),
         "build_profile": receipt.get("build_profile", "buildcheck"),
         "bundle_id": info["CFBundleIdentifier"], "platform": "iPhoneOS",
@@ -160,7 +165,8 @@ def main():
         "platform_validation": "each Mach-O slice: modern iOS or legacy ARM iPhoneOS",
         "signature_kinds": sorted(signature_kinds), "checked_executables": len(binaries),
         "api_mode": receipt.get("api_mode", "invalid-placeholder"),
-        "translation_integration": "jobox-configurable" if personal else "not-integrated",
+        "test_api_source": receipt.get("test_api_source"),
+        "translation_integration": "jobox-configurable" if integrated else "not-integrated",
         "login_verified": False, "translation_verified": False,
         "directly_installable": False, "ipa_bytes": args.ipa.stat().st_size,
         "ipa_sha256": digest,

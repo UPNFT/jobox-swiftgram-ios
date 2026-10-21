@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 from patch_unsigned_profiles import apply_unsigned_profile_fix
 from patch_personal_sideload import apply_personal_sideload_fix
+from prepare_test_configuration import is_test_configuration, test_configuration_receipt
 
 
 UPSTREAM_SHA = "cf8b23beaaac4126a396337ac2d5be13f9f76b66"
@@ -30,16 +31,20 @@ def git_revision(directory, revision):
 
 def validate_configuration(path, profile="buildcheck"):
     configuration = json.loads(path.read_text(encoding="utf-8"))
-    if profile not in {"buildcheck", "personal"}:
+    if profile not in {"buildcheck", "prototype", "personal"}:
         raise ValueError("Unknown build profile")
-    if profile == "buildcheck" and (configuration.get("api_id") != 0 or configuration.get("api_hash") != "0" * 32):
+    if profile == "buildcheck" and (type(configuration.get("api_id")) is not int
+            or configuration.get("api_id") != 0 or configuration.get("api_hash") != "0" * 32):
         raise ValueError("Build checks require api_id=0 and a 32-zero api_hash")
+    if profile == "prototype" and not is_test_configuration(configuration):
+        raise ValueError("Prototype builds require the verified official test-only configuration")
     if profile == "personal" and (
         type(configuration.get("api_id")) is not int
         or not 0 < configuration["api_id"] <= 2147483647
         or not isinstance(configuration.get("api_hash"), str)
         or not re.fullmatch(r"[a-fA-F0-9]{32}", configuration.get("api_hash", ""))
         or configuration["api_hash"] == "0" * 32
+        or is_test_configuration(configuration)
     ):
         raise ValueError("Personal builds require private Telegram application configuration")
     if configuration.get("bundle_id") != "org.jobox.swiftgram.buildcheck":
@@ -79,7 +84,7 @@ def build_unsigned(upstream, config, bazel, build_number, output, profile="build
     validate_configuration(config, profile)
     personal_fix = None
     translation_patch = None
-    if profile == "personal":
+    if profile in {"prototype", "personal"}:
         translation_patch = importlib.import_module("patch_jobox_translation").apply_jobox_translation(upstream)
         personal_fix = apply_personal_sideload_fix(upstream)
     profile_fix = apply_unsigned_profile_fix(upstream)
@@ -134,7 +139,9 @@ def build_unsigned(upstream, config, bazel, build_number, output, profile="build
         with receipt_path.open("x", encoding="utf-8") as receipt:
             json.dump({"source_sha": UPSTREAM_SHA, "configuration": "debug_arm64",
                        "build_profile": profile,
-                       "api_mode": "private-application" if profile == "personal" else "invalid-placeholder",
+                       "api_mode": {"buildcheck": "invalid-placeholder", "prototype": "official-test-only",
+                                    "personal": "private-application"}[profile],
+                       "test_api_source": test_configuration_receipt() if profile == "prototype" else None,
                        "personal_sideload_fix": personal_fix,
                        "translation_patch": translation_patch,
                        "unsigned_profile_fix": profile_fix,
@@ -154,7 +161,7 @@ def main():
     parser.add_argument("--bazel", required=True)
     parser.add_argument("--build-number", required=True, type=int)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--profile", choices=["buildcheck", "personal"], default="buildcheck")
+    parser.add_argument("--profile", choices=["buildcheck", "prototype", "personal"], default="buildcheck")
     arguments = parser.parse_args()
     build_unsigned(
         arguments.upstream, arguments.config, arguments.bazel,

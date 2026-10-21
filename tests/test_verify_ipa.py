@@ -80,7 +80,7 @@ class ArtifactTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "provenance"):
             verify.read_build_receipt(path)
 
-    def prepare_personal_receipt(self):
+    def prepare_personal_receipt(self, profile="personal"):
         self.translation_receipt = {
             "source_revision": verify.SOURCE_SHA,
             "changed_files": [{"path": "fixture.swift", "before_sha256": "1" * 64, "after_sha256": "2" * 64}],
@@ -94,7 +94,9 @@ class ArtifactTests(unittest.TestCase):
         return {
             "source_sha": verify.SOURCE_SHA, "configuration": "debug_arm64",
             "unsigned_profile_fix": verify.profile_fix_receipt(), "harness_commit": "3" * 40,
-            "build_profile": "personal", "api_mode": "private-application",
+            "build_profile": profile,
+            "api_mode": "official-test-only" if profile == "prototype" else "private-application",
+            "test_api_source": verify.test_configuration_receipt() if profile == "prototype" else None,
             "personal_sideload_fix": verify.personal_sideload_receipt(),
             "translation_patch": copy.deepcopy(self.translation_receipt),
         }
@@ -105,7 +107,13 @@ class ArtifactTests(unittest.TestCase):
         return path
 
     def test_personal_provenance_requires_exact_reviewed_patches_and_private_api_mode(self):
-        reviewed = self.prepare_personal_receipt()
+        self.assert_integrated_provenance("personal")
+
+    def test_prototype_requires_exact_patches_and_official_test_source(self):
+        self.assert_integrated_provenance("prototype")
+
+    def assert_integrated_provenance(self, profile):
+        reviewed = self.prepare_personal_receipt(profile)
         self.assertEqual(verify.read_build_receipt(self.write_receipt(reviewed)), reviewed)
         self.translation_receipt_reader.assert_called_once_with()
         variants = []
@@ -122,13 +130,31 @@ class ArtifactTests(unittest.TestCase):
         changed_translation = copy.deepcopy(reviewed)
         changed_translation["translation_patch"]["changed_files"][0]["after_sha256"] = "0" * 64
         variants.append(changed_translation)
-        for mode in (None, "invalid-placeholder", "live"):
+        for mode in (None, "invalid-placeholder", "live",
+                     "private-application" if profile == "prototype" else "official-test-only"):
             changed_mode = copy.deepcopy(reviewed)
             changed_mode["api_mode"] = mode
             variants.append(changed_mode)
+        wrong_source = copy.deepcopy(reviewed)
+        wrong_source["test_api_source"] = {"source_url": "https://unreviewed.invalid", "document_sha256": "0" * 64}
+        variants.append(wrong_source)
+        if profile == "prototype":
+            missing_source = copy.deepcopy(reviewed)
+            missing_source.pop("test_api_source")
+            variants.append(missing_source)
+            for field in ("source_url", "document_sha256"):
+                source_drift = copy.deepcopy(reviewed)
+                source_drift["test_api_source"].pop(field)
+                variants.append(source_drift)
+                changed_source = copy.deepcopy(reviewed)
+                changed_source["test_api_source"][field] = "0" * 64 if field == "document_sha256" else "https://unreviewed.invalid"
+                variants.append(changed_source)
+            extra_source = copy.deepcopy(reviewed)
+            extra_source["test_api_source"]["unreviewed_override"] = True
+            variants.append(extra_source)
         for receipt in variants:
             with self.subTest(receipt=receipt):
-                with self.assertRaisesRegex(ValueError, "personal translation provenance"):
+                with self.assertRaisesRegex(ValueError, profile + " translation provenance"):
                     verify.read_build_receipt(self.write_receipt(receipt))
 
     def test_unknown_profiles_and_personal_changes_in_buildcheck_are_rejected(self):
@@ -180,7 +206,13 @@ class ArtifactTests(unittest.TestCase):
         self.assertIn(framework_root + "Runtime", binaries)
 
     def test_personal_manifest_records_reviewed_provenance_without_claiming_device_success(self):
-        receipt = self.prepare_personal_receipt()
+        self.assert_integrated_manifest("personal")
+
+    def test_prototype_manifest_distinguishes_test_only_api_without_claiming_device_success(self):
+        self.assert_integrated_manifest("prototype")
+
+    def assert_integrated_manifest(self, profile):
+        receipt = self.prepare_personal_receipt(profile)
         receipt_path = self.write_receipt(receipt)
         self.create()
         manifest_path = Path(self.directory.name) / "manifest.json"
@@ -192,8 +224,9 @@ class ArtifactTests(unittest.TestCase):
         check.assert_called_once()
         manifest_text = manifest_path.read_text(encoding="utf-8")
         manifest = json.loads(manifest_text)
-        self.assertEqual(manifest["build_profile"], "personal")
-        self.assertEqual(manifest["api_mode"], "private-application")
+        self.assertEqual(manifest["build_profile"], profile)
+        self.assertEqual(manifest["api_mode"], "official-test-only" if profile == "prototype" else "private-application")
+        self.assertEqual(manifest["test_api_source"], verify.test_configuration_receipt() if profile == "prototype" else None)
         self.assertEqual(manifest["translation_integration"], "jobox-configurable")
         self.assertEqual(manifest["source_adjustments"], [
             receipt["unsigned_profile_fix"], receipt["personal_sideload_fix"], receipt["translation_patch"],
@@ -203,19 +236,59 @@ class ArtifactTests(unittest.TestCase):
         for field in ("api_hash", "token"):
             self.assertNotIn(field, manifest_text)
 
-    def test_personal_main_rejects_extension_residue_before_tools_or_success_files(self):
-        receipt_path = self.write_receipt(self.prepare_personal_receipt())
-        self.create(extra={"Payload/Swiftgram.app/PlugIns/Share.appex/orphan.dat": b"residue"})
+    def test_integrated_main_rejects_extension_residue_before_tools_or_success_files(self):
+        for profile in ("personal", "prototype"):
+            with self.subTest(profile=profile):
+                receipt_path = self.write_receipt(self.prepare_personal_receipt(profile))
+                self.create(extra={"Payload/Swiftgram.app/PlugIns/Share.appex/orphan.dat": b"residue"})
+                manifest = Path(self.directory.name) / "manifest.json"
+                with patch.object(sys, "argv", [
+                    "verify_ipa.py", "--ipa", str(self.ipa), "--source-sha", verify.SOURCE_SHA,
+                    "--build-receipt", str(receipt_path), "--manifest", str(manifest),
+                ]), patch.object(verify, "verify_platform") as check:
+                    with self.assertRaisesRegex(ValueError, "extensions"):
+                        verify.main()
+                check.assert_not_called()
+                self.assertFalse(manifest.exists())
+                self.assertFalse(self.ipa.with_suffix(".ipa.sha256").exists())
+
+    def test_prototype_rejects_bad_framework_platform_or_identity_signature_without_success_files(self):
+        receipt_path = self.write_receipt(self.prepare_personal_receipt("prototype"))
+        nested_name = "Payload/Swiftgram.app/Frameworks/Nested.dylib"
+        self.create(extra={nested_name: b"synthetic framework executable"})
+        manifest = Path(self.directory.name) / "manifest.json"
+        valid_main = [SimpleNamespace(stdout="arm64"), SimpleNamespace(stdout=MODERN_IOS),
+                      SimpleNamespace(returncode=1, stderr="code object is not signed at all")]
+        rejected_nested = [
+            [SimpleNamespace(stdout="arm64 arm64e"), SimpleNamespace(stdout=MODERN_IOS),
+             SimpleNamespace(stdout=MODERN_IOS.replace("platform IOS", "platform WATCHOS"))],
+            [SimpleNamespace(stdout="arm64"), SimpleNamespace(stdout=MODERN_IOS),
+             SimpleNamespace(returncode=0, stderr="Authority=Apple Development\nTeamIdentifier=TESTTEAM")],
+        ]
+        for outputs in rejected_nested:
+            with self.subTest(outputs=outputs), patch.object(sys, "argv", [
+                "verify_ipa.py", "--ipa", str(self.ipa), "--source-sha", verify.SOURCE_SHA,
+                "--build-receipt", str(receipt_path), "--manifest", str(manifest),
+            ]), patch.object(verify.subprocess, "run", side_effect=valid_main + outputs) as run:
+                with self.assertRaisesRegex(ValueError, re.escape(nested_name)):
+                    verify.main()
+                self.assertEqual(sum(item.args[0][:3] == ["xcrun", "lipo", "-archs"] for item in run.call_args_list), 2)
+            self.assertFalse(manifest.exists())
+            self.assertFalse(self.ipa.with_suffix(".ipa.sha256").exists())
+
+    def test_prototype_keeps_the_450_mib_archive_budget(self):
+        self.assertEqual(verify.MAX_IPA_BYTES, 450 * 1024 * 1024)
+        receipt_path = self.write_receipt(self.prepare_personal_receipt("prototype"))
+        self.create()
         manifest = Path(self.directory.name) / "manifest.json"
         with patch.object(sys, "argv", [
             "verify_ipa.py", "--ipa", str(self.ipa), "--source-sha", verify.SOURCE_SHA,
             "--build-receipt", str(receipt_path), "--manifest", str(manifest),
-        ]), patch.object(verify, "verify_platform") as check:
-            with self.assertRaisesRegex(ValueError, "extensions"):
+        ]), patch.object(verify, "MAX_IPA_BYTES", self.ipa.stat().st_size - 1), patch.object(verify, "verify_platform") as check:
+            with self.assertRaisesRegex(ValueError, "450 MiB"):
                 verify.main()
         check.assert_not_called()
         self.assertFalse(manifest.exists())
-        self.assertFalse(self.ipa.with_suffix(".ipa.sha256").exists())
 
     def test_simulator_and_wrong_identity_are_rejected(self):
         for kwargs in [{"platform":"iPhoneSimulator"}, {"bundle_id":"ph.telegra.Telegraph"}]:

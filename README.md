@@ -6,9 +6,9 @@
 
 [基础构建 run 39517096696](https://github.com/UPNFT/jobox-swiftgram-ios/actions/runs/39517096696) 已成功，156.06 MiB IPA、校验值和清单已保存在所有者可见的 Draft Release；13 个 Mach-O 二进制逐架构通过验包。它仍使用无效 Telegram API 配置，未签名，也未接入 Jobox。
 
-本轮 personal 配置加入 Jobox 收译与草稿翻译，并精简免费个人签名不支持的功能。源码实现、本地合成测试、Mac 编译、验包、个人签名、登录和真实收发翻译是不同验收阶段；基础包成功不能证明新功能可用。
+prototype 与 personal 均加入 Jobox 收译与草稿翻译，并精简免费个人签名不支持的功能。prototype 只使用[固定 Telegram 官方文档](https://github.com/telegramdesktop/tdesktop/blob/65b2db216033aa08b7bc846df27843e566f08981/docs/api_credentials.md)中的 TEST ONLY 应用配置，便于在自有应用登记受阻时进行短期原型测试；它不是自己的应用登记，不能用于长期客服，不保证适用于 iOS 登录。源码实现、本地合成测试、完整 Mac 编译、验包、个人签名、登录和真实收发翻译是不同验收阶段；基础包成功不能证明新功能可用。
 
-第一版面向打开 App 时使用：聊天翻译为中文；已有会话的手动暂停继续保留，可通过原聊天翻译入口开启。中文草稿经过原翻译菜单处理后保留在输入框，由本人确认发送。不自动代发消息。个人配置不包含扩展、推送通知、Siri 或 iCloud；不承诺 App 退到后台后继续翻译或收到通知。
+第一版面向打开 App 时使用：聊天翻译为中文；已有会话的手动暂停继续保留，可通过原聊天翻译入口开启。中文草稿经过原翻译菜单处理后保留在输入框，由本人确认发送。不自动代发消息。prototype 与 personal 均不包含扩展、推送通知、Siri 或 iCloud；不承诺 App 退到后台后继续翻译或收到通知。
 
 Jobox 地址、租户、项目及翻译语言在手机设置中填写，服务令牌单独保存在 Keychain，不进入公开仓库或账号备份。复用现有翻译服务，不在构建中调用模型或读取聊天。
 
@@ -18,11 +18,14 @@ Jobox 地址、租户、项目及翻译语言在手机设置中填写，服务�
 
 | build_profile | 内容 | 大流量确认 |
 | --- | --- | --- |
-| translation-tests | 仅下载小型构建仓库，在 Mac 编译并运行 Foundation 合成测试；不下载上游，不调用真实服务 | 不勾选 |
+| translation-tests | 仅下载小型构建仓库，在 Mac 编译并运行 Foundation 合成测试及官方配置准备 smoke；只额外读取固定公开文档，不下载上游、不调用真实翻译服务 | 不勾选 |
 | buildcheck | 固定上游、无效 API 配置的基础包 | 必须当次获准后勾选 |
+| prototype | Jobox 接入、个人侧载精简、固定官方 TEST ONLY 配置；短期测试，iOS 登录未验 | 必须当次获准后勾选 |
 | personal | 固定上游、Jobox 接入、个人侧载精简、自有 Telegram 应用配置 | 必须当次获准后勾选 |
 
 完整构建超过 1 GB 云端流量；不因推送自动执行，不并行编译或盲目重试。使用免费标准 macos-26-intel、已有 Xcode 26.2 与校验摘要的 Bazel 8.4.2；debug_arm64，最多两个编译任务、240 分钟。没有付费机器、Actions cache 或 artifact 存储。
+
+prototype 不取个人 Secrets：先从固定官方 HTTPS 文档核对完整摘要和测试配置指纹，再写 runner 临时 0600 配置，不打印凭据值。来源或内容不符即停止，且发生在完整上游下载之前；回执与 manifest 只记录官方来源及文档摘要，并标明 `official-test-only`。签名、安装、测试登录及手机上的 Jobox 配置仍需单独验收。
 
 personal 构建前，所有者从 [Telegram 官方应用页面](https://my.telegram.org/) 创建自己的应用，并在 [仓库 Actions Secrets](https://github.com/UPNFT/jobox-swiftgram-ios/settings/secrets/actions) 保存 **TELEGRAM_API_ID** 和 **TELEGRAM_API_HASH**。不要把值发在聊天、源码、Issue 或日志里。缺配置时会在下载完整上游之前停止。
 
@@ -30,7 +33,7 @@ personal 构建前，所有者从 [Telegram 官方应用页面](https://my.teleg
 
 验包仍逐个检查所有 Mach-O 的每个架构、iOS 平台和签名，拒绝模拟器、其他平台、未知格式、Apple 身份签名与私钥文件。只允许链接器的纯 ad-hoc 签名或无签名，二者均不能直接安装。固定补丁必须匹配修改前后哈希，漂移即拒绝；完整清单保存调整及构建提交。
 
-仅将验包成功的 **IPA、IPA.sha256、build-manifest.json** 三个文件保存为 Draft。个人包另外拒绝任何 .appex，保留 App Group 和 Keychain 所需能力。
+仅将验包成功的 **IPA、IPA.sha256、build-manifest.json** 三个文件保存为 Draft。prototype 与 personal 均要求 Jobox/侧载补丁的精确回执、拒绝任何 .appex，保留 App Group 和 Keychain 所需能力。profile、API 模式与测试来源必须一致，不把 TEST ONLY 包写成自有 API 包。
 
 ## Windows → iPhone 免费个人签名
 
@@ -48,7 +51,7 @@ personal 构建前，所有者从 [Telegram 官方应用页面](https://my.teleg
 python -m unittest discover -s tests -v
 ```
 
-Mac 原生合成测试通过同一工作流 translation-tests 运行；真实 Telegram UI 的编译依赖完整设备构建，不能用字符串合约替代。
+Mac 原生合成测试通过同一工作流 translation-tests 运行；同一小型任务会验证 Mac 的 HTTPS/固定官方文档及临时配置准备路径，配置不上传、不读取 Secrets。真实 Telegram UI 的编译依赖完整设备构建，不能用字符串合约替代。
 
 ## 上游与许可
 
