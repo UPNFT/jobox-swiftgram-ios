@@ -137,6 +137,24 @@ class JoboxTranslationPatchTests(unittest.TestCase):
         self.assertNotIn("sendMessages(", draft)
         self.assertNotIn("enqueueOutgoing", draft)
 
+    def test_draft_uses_existing_native_helpers_and_preserves_failure_notice(self):
+        self.apply()
+        draft = self.read("submodules/TelegramUI/Sources/Chat/JoboxDraftTranslation.swift")
+        build = self.read("submodules/TelegramUI/BUILD")
+        for module in ("AccountContext", "PresentationDataUtils"):
+            self.assertIn("import " + module, draft.splitlines())
+            self.assertIn(f'"//submodules/{module}:{module}"', build)
+        # These overloads belong to PresentationDataUtils. The base modules
+        # instead take style / AlertControllerContext, not the account context.
+        self.assertIn("OverlayStatusController(theme: self.presentationData.theme, type:", draft)
+        self.assertIn("textAlertController(context: self.context, updatedPresentationData: self.updatedPresentationData,", draft)
+        self.assertNotIn("alertContext: self.context", draft)
+        self.assertIn("ChatTextInputState(inputText: newInputText, selectionRange:", draft)
+        self.assertIn('title: "翻译未完成", text: "原草稿已保留，请稍后重试。"', draft)
+        self.assertIn("currentRequest === request", draft)
+        self.assertIn("request?.gate.cancel()", draft)
+        self.assertIn("request?.disposable.set(nil)", draft)
+
     def test_receive_uses_original_state_ids_and_cache_without_forcing_paused_chat(self):
         self.apply()
         state = self.read("submodules/TranslateUI/Sources/ChatTranslation.swift")

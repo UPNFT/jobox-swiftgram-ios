@@ -2,6 +2,8 @@ import Foundation
 import ObjectiveC
 import SwiftSignalKit
 import Display
+import AccountContext
+import PresentationDataUtils
 import TelegramCore
 import SGSimpleSettings
 import SGGTranslate
