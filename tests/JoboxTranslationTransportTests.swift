@@ -75,7 +75,7 @@ private func json(_ value: [String: Any]) -> Data {
     return try! JSONSerialization.data(withJSONObject: value)
 }
 
-private func requestBody(_ request: URLRequest) throws -> Data {
+private func readRequestBody(_ request: URLRequest) throws -> Data {
     if let body = request.httpBody { return body }
     guard let stream = request.httpBodyStream else { throw TestFailure.failed("missing request body") }
     stream.open()
@@ -120,15 +120,15 @@ private func testParagraphAndProtocol() throws {
     let fixtureBody = Data("one paragraph\n第二行".utf8)
     var fixtureRequest = URLRequest(url: URL(string: "https://translation.invalid/")!)
     fixtureRequest.httpBody = fixtureBody
-    try check(try requestBody(fixtureRequest) == fixtureBody, "Data request body read intact")
+    try check(try readRequestBody(fixtureRequest) == fixtureBody, "Data request body read intact")
     fixtureRequest.httpBody = nil
     fixtureRequest.httpBodyStream = InputStream(data: fixtureBody)
-    try check(try requestBody(fixtureRequest) == fixtureBody, "stream request body read intact")
+    try check(try readRequestBody(fixtureRequest) == fixtureBody, "stream request body read intact")
     let lock = NSLock()
     var captured: (request: URLRequest, body: Data)?
     StubURLProtocol.reset { stub in
         lock.lock()
-        captured = (stub.request, try! requestBody(stub.request))
+        captured = (stub.request, try! readRequestBody(stub.request))
         lock.unlock()
         stub.respond(json(["ok": true, "translations": ["整段译文"]]))
     }
@@ -157,7 +157,7 @@ private func testOutbound() throws {
     var body: [String: Any] = [:]
     StubURLProtocol.reset { stub in
         lock.lock()
-        body = try! JSONSerialization.jsonObject(with: requestBody(stub.request)) as! [String: Any]
+        body = try! JSONSerialization.jsonObject(with: readRequestBody(stub.request)) as! [String: Any]
         lock.unlock()
         stub.respond(json(["ok": true, "translatedText": "draft only"]))
     }
@@ -181,7 +181,7 @@ private func testEnabledPreference() throws {
     var body: [String: Any] = [:]
     StubURLProtocol.reset { stub in
         lock.lock()
-        body = try! JSONSerialization.jsonObject(with: requestBody(stub.request)) as! [String: Any]
+        body = try! JSONSerialization.jsonObject(with: readRequestBody(stub.request)) as! [String: Any]
         lock.unlock()
         stub.respond(json(["ok": true, "translations": ["translation"]]))
     }
