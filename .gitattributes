@@ -1,0 +1,10 @@
+# Pinned upstream fixtures must retain their exact hash on Windows and macOS.
+patches/fixtures/** -text -whitespace
+tests/fixtures/** -text
+patches/**/*.swift text eol=lf
+tests/*.swift text eol=lf
+scripts/*.py text eol=lf
+tests/*.py text eol=lf
+.github/workflows/*.yml text eol=lf
+*.json text eol=lf
+*.md text eol=lf

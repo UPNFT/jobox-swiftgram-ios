@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -7,7 +8,7 @@ import struct
 import tempfile
 import unittest
 import sys
-from unittest.mock import call, patch
+from unittest.mock import call, Mock, patch
 import zipfile
 from types import SimpleNamespace
 
@@ -78,6 +79,143 @@ class ArtifactTests(unittest.TestCase):
         path.write_text(json.dumps(receipt), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "provenance"):
             verify.read_build_receipt(path)
+
+    def prepare_personal_receipt(self):
+        self.translation_receipt = {
+            "source_revision": verify.SOURCE_SHA,
+            "changed_files": [{"path": "fixture.swift", "before_sha256": "1" * 64, "after_sha256": "2" * 64}],
+        }
+        self.translation_receipt_reader = Mock(return_value=self.translation_receipt)
+        patcher = patch.dict(sys.modules, {"patch_jobox_translation": SimpleNamespace(
+            translation_patch_receipt=self.translation_receipt_reader,
+        )})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return {
+            "source_sha": verify.SOURCE_SHA, "configuration": "debug_arm64",
+            "unsigned_profile_fix": verify.profile_fix_receipt(), "harness_commit": "3" * 40,
+            "build_profile": "personal", "api_mode": "private-application",
+            "personal_sideload_fix": verify.personal_sideload_receipt(),
+            "translation_patch": copy.deepcopy(self.translation_receipt),
+        }
+
+    def write_receipt(self, receipt):
+        path = Path(self.directory.name) / "receipt.json"
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        return path
+
+    def test_personal_provenance_requires_exact_reviewed_patches_and_private_api_mode(self):
+        reviewed = self.prepare_personal_receipt()
+        self.assertEqual(verify.read_build_receipt(self.write_receipt(reviewed)), reviewed)
+        self.translation_receipt_reader.assert_called_once_with()
+        variants = []
+        for field in ("personal_sideload_fix", "translation_patch"):
+            missing = copy.deepcopy(reviewed)
+            missing.pop(field)
+            variants.append(missing)
+            drift = copy.deepcopy(reviewed)
+            drift[field]["unreviewed_extra_adjustment"] = True
+            variants.append(drift)
+        changed_hash = copy.deepcopy(reviewed)
+        changed_hash["personal_sideload_fix"]["after_sha256"] = "0" * 64
+        variants.append(changed_hash)
+        changed_translation = copy.deepcopy(reviewed)
+        changed_translation["translation_patch"]["changed_files"][0]["after_sha256"] = "0" * 64
+        variants.append(changed_translation)
+        for mode in (None, "invalid-placeholder", "live"):
+            changed_mode = copy.deepcopy(reviewed)
+            changed_mode["api_mode"] = mode
+            variants.append(changed_mode)
+        for receipt in variants:
+            with self.subTest(receipt=receipt):
+                with self.assertRaisesRegex(ValueError, "personal translation provenance"):
+                    verify.read_build_receipt(self.write_receipt(receipt))
+
+    def test_unknown_profiles_and_personal_changes_in_buildcheck_are_rejected(self):
+        reviewed = self.prepare_personal_receipt()
+        for profile in (None, "", "production", "buildcheck"):
+            with self.subTest(profile=profile):
+                receipt = copy.deepcopy(reviewed)
+                receipt["build_profile"] = profile
+                with self.assertRaisesRegex(ValueError, "build-check profile"):
+                    verify.read_build_receipt(self.write_receipt(receipt))
+        for field in ("personal_sideload_fix", "translation_patch"):
+            receipt = copy.deepcopy(reviewed)
+            receipt.update(build_profile="buildcheck", api_mode="invalid-placeholder")
+            receipt["translation_patch"] = None
+            receipt["personal_sideload_fix"] = None
+            receipt[field] = reviewed[field]
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ValueError, "build-check profile"):
+                    verify.read_build_receipt(self.write_receipt(receipt))
+
+    def test_personal_archive_rejects_extensions_even_without_info_or_executable(self):
+        for name in (
+            "Payload/Swiftgram.app/PlugIns/Share.appex/",
+            "Payload/Swiftgram.app/PlugIns/Share.appex/leftover.dat",
+            "Payload/Swiftgram.app/PlugIns/Share.appex/Info.plist",
+        ):
+            with self.subTest(name=name):
+                self.create(extra={name: b"extension residue"})
+                with self.assertRaisesRegex(ValueError, "extensions"):
+                    verify.inspect_archive(self.ipa, personal=True)
+        self.create(extra={"Payload/Swiftgram.app/Assets/notes.appex.txt": b"ordinary resource"})
+        verify.inspect_archive(self.ipa, personal=True)
+
+    def test_default_archive_inspection_keeps_extensions_and_personal_keeps_frameworks(self):
+        executable = struct.pack("<II", 0xFEEDFACF, 0x0100000C) + b"\0" * 24
+        extension_root = "Payload/Swiftgram.app/PlugIns/Share.appex/"
+        self.create(extra={
+            extension_root + "Info.plist": plistlib.dumps({"CFBundleExecutable": "Share"}),
+            extension_root + "Share": executable,
+        })
+        _, binaries = verify.inspect_archive(self.ipa)
+        self.assertIn(extension_root + "Share", binaries)
+        framework_root = "Payload/Swiftgram.app/Frameworks/Runtime.framework/"
+        self.create(extra={
+            framework_root + "Info.plist": plistlib.dumps({"CFBundleExecutable": "Runtime"}),
+            framework_root + "Runtime": executable,
+        })
+        _, binaries = verify.inspect_archive(self.ipa, personal=True)
+        self.assertIn(framework_root + "Runtime", binaries)
+
+    def test_personal_manifest_records_reviewed_provenance_without_claiming_device_success(self):
+        receipt = self.prepare_personal_receipt()
+        receipt_path = self.write_receipt(receipt)
+        self.create()
+        manifest_path = Path(self.directory.name) / "manifest.json"
+        with patch.object(sys, "argv", [
+            "verify_ipa.py", "--ipa", str(self.ipa), "--source-sha", verify.SOURCE_SHA,
+            "--build-receipt", str(receipt_path), "--manifest", str(manifest_path),
+        ]), patch.object(verify, "verify_platform", return_value="none") as check:
+            verify.main()
+        check.assert_called_once()
+        manifest_text = manifest_path.read_text(encoding="utf-8")
+        manifest = json.loads(manifest_text)
+        self.assertEqual(manifest["build_profile"], "personal")
+        self.assertEqual(manifest["api_mode"], "private-application")
+        self.assertEqual(manifest["translation_integration"], "jobox-configurable")
+        self.assertEqual(manifest["source_adjustments"], [
+            receipt["unsigned_profile_fix"], receipt["personal_sideload_fix"], receipt["translation_patch"],
+        ])
+        for field in ("apple_identity_signed", "login_verified", "translation_verified", "directly_installable"):
+            self.assertIs(manifest[field], False)
+        for field in ("api_hash", "token"):
+            self.assertNotIn(field, manifest_text)
+
+    def test_personal_main_rejects_extension_residue_before_tools_or_success_files(self):
+        receipt_path = self.write_receipt(self.prepare_personal_receipt())
+        self.create(extra={"Payload/Swiftgram.app/PlugIns/Share.appex/orphan.dat": b"residue"})
+        manifest = Path(self.directory.name) / "manifest.json"
+        with patch.object(sys, "argv", [
+            "verify_ipa.py", "--ipa", str(self.ipa), "--source-sha", verify.SOURCE_SHA,
+            "--build-receipt", str(receipt_path), "--manifest", str(manifest),
+        ]), patch.object(verify, "verify_platform") as check:
+            with self.assertRaisesRegex(ValueError, "extensions"):
+                verify.main()
+        check.assert_not_called()
+        self.assertFalse(manifest.exists())
+        self.assertFalse(self.ipa.with_suffix(".ipa.sha256").exists())
 
     def test_simulator_and_wrong_identity_are_rejected(self):
         for kwargs in [{"platform":"iPhoneSimulator"}, {"bundle_id":"ph.telegra.Telegraph"}]:

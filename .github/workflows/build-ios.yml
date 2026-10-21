@@ -3,6 +3,15 @@ name: Swiftgram unsigned iPhone build check
 on:
   workflow_dispatch:
     inputs:
+      build_profile:
+        description: 'Choose synthetic tests, placeholder base, or private personal translation build'
+        type: choice
+        required: true
+        default: buildcheck
+        options:
+          - translation-tests
+          - buildcheck
+          - personal
       large_transfer_approved:
         description: 'User explicitly approved this >1 GB cloud source/dependency transfer'
         type: boolean
@@ -17,8 +26,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  translation-tests:
+    if: ${{ inputs.build_profile == 'translation-tests' }}
+    runs-on: macos-26-intel
+    timeout-minutes: 15
+    steps:
+      - name: Check out small harness only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Run harness and native synthetic transport tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+          swiftc -swift-version 5 -warnings-as-errors patches/JoboxTranslationTransport.swift patches/JoboxTranslationStore.swift \
+            patches/Jobox/JoboxDraftIdentity.swift \
+            tests/JoboxTranslationTransportTests.swift -o "$RUNNER_TEMP/jobox-translation-tests"
+          "$RUNNER_TEMP/jobox-translation-tests"
+
   build:
-    if: ${{ inputs.large_transfer_approved == true }}
+    if: ${{ inputs.large_transfer_approved == true && (inputs.build_profile == 'buildcheck' || inputs.build_profile == 'personal') }}
     runs-on: macos-26-intel
     timeout-minutes: 240
     permissions:
@@ -28,6 +57,7 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
       BAZEL_SHA256: ce73346274c379f77880db8bd8b9c8569885fe56f19386173760949da9078df0
       HOMEBREW_NO_AUTO_UPDATE: '1'
+      BUILD_PROFILE: ${{ inputs.build_profile }}
     steps:
       - name: Check out build harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -35,6 +65,17 @@ jobs:
           path: harness
           persist-credentials: false
           fetch-depth: 1
+
+      - name: Prepare private application configuration before source transfer
+        if: ${{ inputs.build_profile == 'personal' }}
+        env:
+          JOBOX_TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          JOBOX_TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 harness/scripts/prepare_personal_configuration.py \
+            --base harness/config.json --output "$RUNNER_TEMP/jobox-personal-config.json"
 
       - name: Check free standard runner and installed toolchain
         shell: bash
@@ -45,7 +86,7 @@ jobs:
           test -d "$DEVELOPER_DIR"
           xcodebuild -version
           df -h "$RUNNER_TEMP"
-          echo 'Unsigned build check only. No real accounts, API credentials or translation services.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Unsigned device build. No Apple identities, login, live translation tests or customer messages.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check out pinned Swiftgram source and public submodules
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -76,27 +117,31 @@ jobs:
           printf '%s  %s\n' "$BAZEL_SHA256" "$RUNNER_TEMP/bazel-8.4.2" | shasum -a 256 --check
           chmod +x "$RUNNER_TEMP/bazel-8.4.2"
 
-      - name: Build unsigned arm64 iPhone app with placeholder configuration
+      - name: Build unsigned arm64 iPhone app
         shell: bash
         run: |
           set -euo pipefail
+          config="$GITHUB_WORKSPACE/harness/config.json"
+          if [[ "$BUILD_PROFILE" == personal ]]; then
+            config="$RUNNER_TEMP/jobox-personal-config.json"
+          fi
           python3 harness/scripts/build_unsigned.py \
             --upstream "$GITHUB_WORKSPACE/swiftgram" \
-            --config "$GITHUB_WORKSPACE/harness/config.json" \
+            --config "$config" --profile "$BUILD_PROFILE" \
             --bazel "$RUNNER_TEMP/bazel-8.4.2" \
             --build-number "$GITHUB_RUN_NUMBER" \
-            --output "$GITHUB_WORKSPACE/out/Swiftgram-buildcheck-unsigned.ipa"
+            --output "$GITHUB_WORKSPACE/out/Jobox-$BUILD_PROFILE-unsigned.ipa"
 
       - name: Verify device platform and unsigned artifact
         shell: bash
         run: |
           set -euo pipefail
           python3 harness/scripts/verify_ipa.py \
-            --ipa "$GITHUB_WORKSPACE/out/Swiftgram-buildcheck-unsigned.ipa" \
+            --ipa "$GITHUB_WORKSPACE/out/Jobox-$BUILD_PROFILE-unsigned.ipa" \
             --source-sha "$SOURCE_SHA" \
-            --build-receipt "$GITHUB_WORKSPACE/out/Swiftgram-buildcheck-unsigned.build.json" \
+            --build-receipt "$GITHUB_WORKSPACE/out/Jobox-$BUILD_PROFILE-unsigned.build.json" \
             --manifest "$GITHUB_WORKSPACE/out/build-manifest.json"
-          echo 'Device IPA verified. Unsigned, placeholder API: cannot log in or install directly.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Device IPA verified. Personal signing and real device acceptance remain pending.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save verified files as a draft for owner review
         env:
@@ -105,18 +150,23 @@ jobs:
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/build-notes.md" <<'NOTES'
-          Build verification only. Not signed with an Apple developer identity.
-          Telegram API configuration is invalid placeholder data; login and translation are not enabled.
-          iPhone installation needs separate personal signing and real application configuration.
+          Unsigned device build, not signed with an Apple developer identity.
+          Check build-manifest.json for build_profile, api_mode and exact source adjustments.
+          Personal builds contain the owner's Telegram application configuration. Keep this draft private.
+          Never publish the personal IPA or copy it into public Actions artifacts.
+          Jobox service configuration and token are entered on device, with the token in Keychain.
+          iPhone signing, App Group mapping, login and live translation have not been verified.
+          Free personal signing expires after 7 days. This foreground build has no push notifications or extensions.
           Upstream: https://github.com/Swiftgram/Telegram-iOS/tree/cf8b23beaaac4126a396337ac2d5be13f9f76b66
           Two rules_apple profile-embedding guards are adjusted for unsigned builds; exact hashes are in build-manifest.json.
-          Build source and configuration are in this repository. See upstream licenses before redistribution.
+          Public source and placeholder configuration are in this repository; private configuration is runner-local only.
+          See upstream licenses before redistribution.
           NOTES
-          gh release create "buildcheck-$GITHUB_RUN_NUMBER" \
+          gh release create "$BUILD_PROFILE-$GITHUB_RUN_NUMBER" \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --prerelease \
-            --title "Swiftgram build check $GITHUB_RUN_NUMBER · unsigned / placeholder API" \
+            --title "Jobox $BUILD_PROFILE $GITHUB_RUN_NUMBER · unsigned / device acceptance pending" \
             --notes-file "$RUNNER_TEMP/build-notes.md" \
-            out/Swiftgram-buildcheck-unsigned.ipa \
-            out/Swiftgram-buildcheck-unsigned.ipa.sha256 \
+            "out/Jobox-$BUILD_PROFILE-unsigned.ipa" \
+            "out/Jobox-$BUILD_PROFILE-unsigned.ipa.sha256" \
             out/build-manifest.json
           echo 'Verified files are saved in a draft release for owner review; not publicly released.' >> "$GITHUB_STEP_SUMMARY"

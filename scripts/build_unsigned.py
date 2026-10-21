@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the pinned Swiftgram device target with no signing material or live API ID."""
+"""Build a pinned unsigned device target with placeholder or private application configuration."""
 
 import argparse
 import importlib
@@ -7,12 +7,14 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
 
 from patch_unsigned_profiles import apply_unsigned_profile_fix
+from patch_personal_sideload import apply_personal_sideload_fix
 
 
 UPSTREAM_SHA = "cf8b23beaaac4126a396337ac2d5be13f9f76b66"
@@ -26,10 +28,20 @@ def git_revision(directory, revision):
     ).strip()
 
 
-def validate_configuration(path):
+def validate_configuration(path, profile="buildcheck"):
     configuration = json.loads(path.read_text(encoding="utf-8"))
-    if configuration.get("api_id") != 0 or configuration.get("api_hash") != "0" * 32:
+    if profile not in {"buildcheck", "personal"}:
+        raise ValueError("Unknown build profile")
+    if profile == "buildcheck" and (configuration.get("api_id") != 0 or configuration.get("api_hash") != "0" * 32):
         raise ValueError("Build checks require api_id=0 and a 32-zero api_hash")
+    if profile == "personal" and (
+        type(configuration.get("api_id")) is not int
+        or not 0 < configuration["api_id"] <= 2147483647
+        or not isinstance(configuration.get("api_hash"), str)
+        or not re.fullmatch(r"[a-fA-F0-9]{32}", configuration.get("api_hash", ""))
+        or configuration["api_hash"] == "0" * 32
+    ):
+        raise ValueError("Personal builds require private Telegram application configuration")
     if configuration.get("bundle_id") != "org.jobox.swiftgram.buildcheck":
         raise ValueError("Unexpected build-check bundle ID")
     if configuration.get("team_id") != "0000000000":
@@ -43,7 +55,7 @@ def validate_configuration(path):
         raise ValueError("sg_config must provide the full .invalid build configuration; missing keys restore upstream defaults")
 
 
-def build_unsigned(upstream, config, bazel, build_number, output):
+def build_unsigned(upstream, config, bazel, build_number, output, profile="buildcheck"):
     upstream = Path(upstream).resolve(strict=True)
     config = Path(config).resolve(strict=True)
     bazel = Path(bazel).resolve(strict=True)
@@ -64,7 +76,12 @@ def build_unsigned(upstream, config, bazel, build_number, output):
     signing_source = upstream / RULES_APPLE_PATH / "apple/internal/codesigning_support.bzl"
     if 'if "disable_legacy_signing" in features:' not in signing_source.read_text(encoding="utf-8"):
         raise ValueError("Pinned rules_apple has no explicit unsigned build feature")
-    validate_configuration(config)
+    validate_configuration(config, profile)
+    personal_fix = None
+    translation_patch = None
+    if profile == "personal":
+        translation_patch = importlib.import_module("patch_jobox_translation").apply_jobox_translation(upstream)
+        personal_fix = apply_personal_sideload_fix(upstream)
     profile_fix = apply_unsigned_profile_fix(upstream)
     print("Unsigned profile gate: " + json.dumps(profile_fix, sort_keys=True))
 
@@ -105,6 +122,8 @@ def build_unsigned(upstream, config, bazel, build_number, output):
             "--features=disable_legacy_signing", "--define=apple.package_swift_support=no",
             "--define=apple.compress_ipa=yes", "--jobs=2",
         ])
+        if personal_fix is not None:
+            command.common_build_args.extend(personal_fix["required_build_flags"])
         command.invoke_build()
         ipa = upstream / "bazel-bin/Telegram/Swiftgram.ipa"
         if not ipa.is_file():
@@ -114,6 +133,10 @@ def build_unsigned(upstream, config, bazel, build_number, output):
             shutil.copyfileobj(source, destination)
         with receipt_path.open("x", encoding="utf-8") as receipt:
             json.dump({"source_sha": UPSTREAM_SHA, "configuration": "debug_arm64",
+                       "build_profile": profile,
+                       "api_mode": "private-application" if profile == "personal" else "invalid-placeholder",
+                       "personal_sideload_fix": personal_fix,
+                       "translation_patch": translation_patch,
                        "unsigned_profile_fix": profile_fix,
                        "harness_commit": os.environ.get("GITHUB_SHA")}, receipt, indent=2)
             receipt.write("\n")
@@ -131,10 +154,11 @@ def main():
     parser.add_argument("--bazel", required=True)
     parser.add_argument("--build-number", required=True, type=int)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--profile", choices=["buildcheck", "personal"], default="buildcheck")
     arguments = parser.parse_args()
     build_unsigned(
         arguments.upstream, arguments.config, arguments.bazel,
-        arguments.build_number, arguments.output,
+        arguments.build_number, arguments.output, arguments.profile,
     )
 
 

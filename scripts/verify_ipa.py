@@ -11,17 +11,20 @@ import tempfile
 import zipfile
 
 from patch_unsigned_profiles import profile_fix_receipt
+from patch_personal_sideload import personal_sideload_receipt
 
 SOURCE_SHA = "cf8b23beaaac4126a396337ac2d5be13f9f76b66"
 BUNDLE_ID = "org.jobox.swiftgram.buildcheck"
 MAX_IPA_BYTES = 450 * 1024 * 1024
 
 
-def inspect_archive(ipa):
+def inspect_archive(ipa, personal=False):
     if not ipa.is_file() or ipa.stat().st_size > MAX_IPA_BYTES:
         raise ValueError("IPA missing or exceeds 450 MiB artifact budget")
     with zipfile.ZipFile(ipa) as archive:
         names = archive.namelist()
+        if personal and any(any(part.endswith(".appex") for part in PurePosixPath(name).parts) for name in names):
+            raise ValueError("Personal foreground build must omit app extensions")
         if len(names) != len(set(names)):
             raise ValueError("Duplicate archive entries")
         for name in names:
@@ -105,6 +108,18 @@ def read_build_receipt(path):
             or receipt.get("unsigned_profile_fix") != profile_fix_receipt()
             or not re.fullmatch(r"[a-f0-9]{40}", receipt.get("harness_commit") or "")):
         raise ValueError("Missing or unreviewed source adjustment provenance")
+    profile = receipt.get("build_profile", "buildcheck")
+    if profile == "personal":
+        from patch_jobox_translation import translation_patch_receipt
+        if (receipt.get("api_mode") != "private-application"
+                or receipt.get("personal_sideload_fix") != personal_sideload_receipt()
+                or receipt.get("translation_patch") != translation_patch_receipt()):
+            raise ValueError("Missing or unreviewed personal translation provenance")
+    elif (profile != "buildcheck"
+          or receipt.get("api_mode", "invalid-placeholder") != "invalid-placeholder"
+          or receipt.get("personal_sideload_fix") is not None
+          or receipt.get("translation_patch") is not None):
+        raise ValueError("Unexpected build-check profile or source changes")
     return receipt
 
 
@@ -118,7 +133,8 @@ def main():
     if args.source_sha != SOURCE_SHA:
         raise ValueError("Unexpected source revision")
     receipt = read_build_receipt(args.build_receipt)
-    info, binaries = inspect_archive(args.ipa)
+    personal = receipt.get("build_profile") == "personal"
+    info, binaries = inspect_archive(args.ipa, personal=personal)
     signature_kinds = set()
     with tempfile.TemporaryDirectory(prefix="jobox-ipa-check-") as directory:
         for index, (archive_name, executable) in enumerate(binaries.items()):
@@ -134,13 +150,17 @@ def main():
         "upstream": "Swiftgram/Telegram-iOS", "source_sha": SOURCE_SHA,
         "harness_commit": receipt["harness_commit"],
         "configuration": receipt["configuration"],
-        "source_adjustments": [receipt["unsigned_profile_fix"]],
+        "source_adjustments": [receipt["unsigned_profile_fix"]] + (
+            [receipt["personal_sideload_fix"], receipt["translation_patch"]] if personal else []
+        ),
+        "build_profile": receipt.get("build_profile", "buildcheck"),
         "bundle_id": info["CFBundleIdentifier"], "platform": "iPhoneOS",
         "architecture": "arm64", "apple_identity_signed": False,
         "distribution_layout": "unsigned-sideload-without-swift-support",
         "platform_validation": "each Mach-O slice: modern iOS or legacy ARM iPhoneOS",
         "signature_kinds": sorted(signature_kinds), "checked_executables": len(binaries),
-        "api_mode": "invalid-placeholder",
+        "api_mode": receipt.get("api_mode", "invalid-placeholder"),
+        "translation_integration": "jobox-configurable" if personal else "not-integrated",
         "login_verified": False, "translation_verified": False,
         "directly_installable": False, "ipa_bytes": args.ipa.stat().st_size,
         "ipa_sha256": digest,
@@ -149,7 +169,7 @@ def main():
     args.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     args.ipa.with_suffix(args.ipa.suffix + ".sha256").write_text(
         f"{digest}  {args.ipa.name}\n", encoding="utf-8")
-    print("Verified unsigned arm64 iPhone artifact with placeholder API configuration.")
+    print("Verified unsigned arm64 iPhone artifact; login, translation and signing still require device acceptance.")
 
 
 if __name__ == "__main__":
